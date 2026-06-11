@@ -5,74 +5,77 @@ import (
 	"math"
 )
 
-// func 函数名(参数列表) 返回类型{}
+// 函数基础用法
+// func function_name (参数列表) 返回类型 {
+//	...
+// }
 
-func swap(x, y string) (string, string) {
-	return y, x
+// 1. 值传递和指针传递，go 中只有值传递，指针传递也是拷贝了指针的副本，有指针的副本也能找到具体的值
+func swapByValue(x,y int) {
+	x, y = y, x
 }
 
-// 参数传递：go 的函数参数传递都是值传递，没有引用传递
-// 传值，拷贝原来的值，传指针，拷贝指针的内容
-// 拷贝的指针的内容指向原内容，故可以顺着指针进行修改
-func add(a int) {
-	a++
-	fmt.Printf("add() 中的 a 值为 %d\n", a)
+func swapByPtr(x, y *int) {
+	*x, *y = *y, *x
 }
 
-// 函数变量作为回调函数
-// 给函数起别名，声明一个函数类型
+// 3. 函数可以作为另外一个函数的实参传递
+// 声明一个函数类型
+// func(int) int 这个匿名函数现在叫 fc，起了个别名
 type fc func(int) int
 
-// 回调函数：把一个函数交给另外一个函数，由另外一个函数在合适的时候调用它
-func callBack(x int) int {
+// 接收一个int类型和一个func(int)int类型参数
+// 把外面传进来的x交给f执行
+func callBack(x int, f fc) {
+	res := f(x)
+	fmt.Println("回调返回值：", res)
+}
+
+// 完全符合 func(int)int 的函数类型，可以直接作为 fc 类型作为变量传给 callBack
+func cb(x int) int {
 	fmt.Printf("我是回调，x: %d\n", x)
 	return x
 }
-func CallBack(x int, f fc) {
-	// 传进来的是callback函数，函数执行需要传入一个ingt类型参数，所以传入x
-	f(x)
-}
 
-// 闭包：匿名函数，是一个内联的语句或者表达式
+// 4. 闭包：匿名函数 + 捕获自己作用域外的变量
 func getNumber() func() int {
 	i := 0
 	return func() int {
-		i += 1
+		i += 10
 		return i
 	}
 }
+
 func main() {
-	a, b := swap("hello", "golang")
-	fmt.Println(a, b)
-	fmt.Println("-------------------")
-	num := 100
-	fmt.Printf("调用add前：num=%d\n", num)
-	add(num)
-	fmt.Printf("调用add后： num=%d\n", num)
+	// 1. 值传递和指针传递
+	a, b := 10, 20
+	fmt.Println("调用前 a =", a, "b =", b)
+	fmt.Println("------------- 值传递 ---------------")
+	swapByValue(a, b)
+	fmt.Println("值传递调用结束，main中 a =", a, "b =", b)
+	fmt.Println("------------- 指针传递 ---------------")
+	swapByPtr(&a, &b)
+	fmt.Println("指针传递调用结束，main中 a =", a, "b =", b)
 
-	fmt.Println("-------------------")
-
-	// 函数变量，go 中一切皆变量
-	// 声明函数变量
+	// 2. 函数作为变量
+	// func(x float64) float64 { return mat.Sqrt(x) }
+	// 把整个函数作为一个变量赋值给 getSquareRoot
+	// getSquareRoot 存的是一个函数类型的值，类型是 func(x float64) float64
+	// 这个函数没有名字，就是匿名函数
+	fmt.Println("------------- 函数作为变量 ---------------")
 	getSquareRoot := func(x float64) float64 {
 		return math.Sqrt(x)
 	}
 	fmt.Println(getSquareRoot(16))
 
-	// 执行回调函数
-	fmt.Println("-------------------")
-	CallBack(1, callBack)
-	fmt.Println("-------------------")
+	// 3. 函数可以作为另外一个函数的实参传递
+	fmt.Println("------------- 函数作为另一个函数的实参 ---------------")
+	callBack(99, cb)
 
-	nextNumber := getNumber()
-
-	// 调用 nextNumber 函数，变量自增1并返回
-	fmt.Println(nextNumber())
-	fmt.Println(nextNumber())
-	fmt.Println(nextNumber())
-
-	// 创建新的函数 nextNumber1，查看结果
-	nextNumber1 := getNumber()
-	fmt.Println(nextNumber1())
-	fmt.Println(nextNumber1())
+	// 4. 闭包
+	fmt.Println("------------- 闭包 ---------------")
+	nxetNumber := getNumber()
+	fmt.Println(nxetNumber())
+	fmt.Println(nxetNumber())
+	fmt.Println(nxetNumber())	
 }
