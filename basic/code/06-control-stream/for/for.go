@@ -106,22 +106,23 @@ import (
 // 	// }
 // }
 
-// // 使用迭代遍历闭包的问题
-// // 老版本中，for 循环里的变量 i，只在内存中占用一块空间
-// // 循环阶段，存入 1 2 3，但是此时只有一个 i 的地址
-// // 另外一个循环开始遍历，去内存中找 i 的地址，i 里装的是 3，打印了三个3
-// func main() {
-// 	var funcs []func()
+// 使用迭代遍历闭包的问题
+// 老版本中，for 循环里的变量 i，只在内存中占用一块空间
+// 循环阶段，存入 0 1 2，但是此时只有一个 i 的地址
+// 另外一个循环开始遍历，去内存中找 i 的地址，i 里装的是 3，打印了三个3
+func main() {
+	var funcs []func()
 
-// 	for i := 0; i < 3; i++ {
-// 		funcs = append(funcs, func() {
-// 			fmt.Println(i) // 匿名函数 func 捕获了外层的 i
-// 		})
-// 	}
+	for i := 0; i < 3; i++ {
+		funcs = append(funcs, func() {
+			fmt.Println(i) // 匿名函数 func 捕获了外层的 i
+		})
+	}
 
-// 	for _, f := range funcs {
-// 		f()
-// 	}
+	for _, f := range funcs {
+		f()
+	}
+}
 
 // 	// 解决1：使用同名局部变量遮蔽
 // 	for i := 0; i < 3; i++ {
@@ -183,18 +184,18 @@ import (
 // 	}
 // }
 
-// for range 遍历字符串时，每次迭代会返回 Unicode 代码点
-// 不会返回字节，如果字符串包含多字节字符，就需要注意
+// // for range 遍历字符串时，每次迭代会返回 Unicode 代码点
+// // 不会返回字节，如果字符串包含多字节字符，就需要注意
 
-func main() {
-	str := "hello 世界"
+// func main() {
+// 	str := "hello 世界"
 
-	for i, r := range str {
-		fmt.Printf("index: %d, rune: %c\n", i, r)
-	}
+// 	for i, r := range str {
+// 		fmt.Printf("index: %d, rune: %c\n", i, r)
+// 	}
 
-	// 按照字节遍历，使用常规的 for 循环
-	for i := 0; i < len(str); i++ {
-		fmt.Printf("index: %d, byte: %x\n", i, str[i])
-	}
-}
+// 	// 按照字节遍历，使用常规的 for 循环
+// 	for i := 0; i < len(str); i++ {
+// 		fmt.Printf("index: %d, byte: %x\n", i, str[i])
+// 	}
+// }
