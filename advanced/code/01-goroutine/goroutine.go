@@ -1,138 +1,201 @@
-package main
+// ===========================================================
+// 0. 前置知识回顾
+// 程序：磁盘上存储的静态文件
+// 进程：程序加载到内存中，是程序的一个实体，资源的容器，进行资源分配
+// 线程：内核的执行流，CPU 调度的实体，被执行的上下文
+// 协程：用户的执行流，代码/运行时调度，拥有极小的栈空间（2KB）
+// 
+// 并发：一个 CPU 上，不同线程轮换执行，宏观上感觉是同时发生
+// 并行：多个 CPU 上，不同线程同时执行
+//
+// ===========================================================
 
+package main
+ 
 import (
 	"fmt"
 	"sync"
 	"time"
-)
+	"runtime"
+) 
 
-// 0、前置知识回顾
-// 程序：磁盘上存储的静态文件
-// 进程：程序加载到内存中，程序的一个实体，资源的容器，进行资源分配
-// 线程：内核的执行流，CPU 调度实体，被执行的上下文
-// 协程：用户的执行流，代码/运行时调度，极小的用户栈
+// ===========================================================
+// 1. goroutine 基本使用
+// ===========================================================
+func demo1_basic() {
+	fmt.Println("=== 1. goroutine 基本使用 ===")
+	go fmt.Println("Hello from goroutine")
 
-// 并发：一个 CPU 上，不同线程轮换执行，宏观上感觉是同时发生，微观上并非
-// 并行：多个 CPU 上，不同线程同时执行
+	// 若不等待，主协程退出时，这个协程可能还没执行
+	time.Sleep(10 * time.Millisecond)
+	fmt.Println("主协程结束")
+}
 
-// 1. 主协程，main()函数的是默认的主协程，后续创建的都是子协程
-// func myGoroutine() {
-// 	fmt.Println("myGoroutine")
-// }
-
-// func main() {
-// 	// 只输出了主协程的内容
-// 	// 主协程打印完之后就退出了，不会管子协程
-// 	go myGoroutine()
-// 	fmt.Println("end--------")
-// 	// 执行完休眠两秒，这个两秒是猜测，具体不清楚
-// 	time.Sleep(2 * time.Second)
-// }
-
-// // 2. 多协程调用和等待
-
-// func worker(id int, wg *sync.WaitGroup) {
-// 	defer wg.Done()
-
-// 	fmt.Printf("worker[%d] 开始工作。。。\n", id)
-// 	time.Sleep(time.Second * 1)
-// 	fmt.Printf("worker[%d]结束工作。。。\n", id)
-// }
-
-// func main() {
-// 	fmt.Println("----------- 主协程开始 --------------")
-// 	var wg sync.WaitGroup
-// 	// 另外一种写法，明确知道了要用几个协程
-// 	// wg.Add(3)
-
-// 	for i := 1; i <= 3; i++ {
-// 		// 必须写 1，因为固定了 3 个协程， 如果写 2，就意味着 2 * 3 = 6 个协程
-// 		wg.Add(1)
-
-// 		go worker(i, &wg)
-// 	}
-
-// 	fmt.Println("------------ 主协程开始等待 ----------")
-
-// 	wg.Wait()
-
-// 	fmt.Println("-------- 主协程退出 -------------")
-// }
-
-// 3. 多协程异常捕获和 recover 捕获的三重防线
-func badCapture() {
-	defer func() {
-		if err := recover(); err != nil {
-			fmt.Printf("试图捕获子协程异常: ", err)
-		}
-	}()
-
+// ===========================================================
+// 2. 主协程：Go 给 main() 创建的 协程
+// 主协程退出 -> 所有子协程立即被杀死，不等待
+// ===========================================================
+func demo2_main_goroutine() {
+	fmt.Println("\n=== 2. 主协程退出，子协程被杀死 ===")
+	
 	go func() {
-		fmt.Println("子协程：我要 panic 了")
-		panic("子协程 panic ")
+		time.Sleep(500 * time.Millisecond)
+
+		fmt.Println("这句话大概率不会被打印....")
 	}()
 
-	time.Sleep(time.Second * 1)
+	fmt.Println("主协程结束 -> 子协程被杀死...")
 }
 
-func testCaptureConut() {
-	defer func() {
-		// recover 捕获次数判定
-		// 一次函数退栈过程中，内置的 recover() 只要成功执行并返回了 nil 的值
-		// 当前发生的 panic 就会立刻被抹去
-		if err1 := recover(); err1 != nil {
-			fmt.Printf("第一次执行 recover 捕获成果: %v", err1)
-		}
-
-		if err2 := recover(); err2 != nil {
-			fmt.Printf("第二次执行 recover， 成功捕获: %v", err2)
-		} else {
-			fmt.Println("第二次执行 recover， 返回 nil， 证明一个 panic 只能 reover 一次!")
-		}
-	}()
-
-	panic("触发")
+// ===========================================================
+// 3. WaitGroup：等待一组协程完成
+// 像一个计数器：
+// Add(n)	计数器 + n，登记 n 个任务
+// Done()	计数器 - 1，完成一个任务
+// Wait()	阻塞等待到计数器归零
+// ===========================================================
+func worker(name string, wg *sync.WaitGroup) {
+	defer wg.Done() 
+	for i := 0; i < 3; i++ {
+		fmt.Printf("[%s] 步骤 %d\n", name, i + 1)
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
-func SafeGo(wg *sync.WaitGroup, task func()) {
-	wg.Add(1)
+func demo3_WaitGroup() {
+	fmt.Println("\n=== 3. WaitGroup 多协程同步 ===")
+	var wg sync.WaitGroup
+
+	wg.Add(2)	// 明确创建两个协程
+	// 必须要取地址，否则两个协程操作的是副本
+	go worker("worker A", &wg)
+	go worker("worker B", &wg)
+
+	wg.Wait()
+	fmt.Println("All works were done!")
+
+}
+
+// ===========================================================
+// 4. 闭包变量捕获陷阱
+// ===========================================================
+func demo4_closure() {
+	fmt.Println("\n === 4. 闭包变量捕获陷阱 ===")
+	
+	// 错误写法❌
+	fmt.Println("\n--- ❌闭包直接捕获循环变量❌")
+	var wg sync.WaitGroup
+	for i := 1; i <= 5; i++ {
+		wg.Add(1) 
+		go func() {
+			defer wg.Done()
+			// ❌ i 是循环变量，所有协程共享同一个变量地址
+			fmt.Printf("协程 [%d]\n", i)
+		}()
+	}
+	wg.Wait()
+
+	// 正确写法✔
+	fmt.Println("\n--- 1. ✔循环内创建局部变量✔ ---")
+	for i := 1; i <= 5; i++ {
+		wg.Add(1)
+		i := i 		// 遮蔽外层的循环变量，用其它变量名也可以
+		go func() {
+			defer wg.Done()
+			fmt.Printf("协程 [%d]\n", i)
+		}()
+	}
+	wg.Wait()
+
+	fmt.Println("\n--- 2. ✔通过参数传入，强制拷贝✔ ---")
+	for i := 1; i <= 5; i++ {
+		wg.Add(1)
+		i := i 		// 遮蔽外层的循环变量，用其它变量名也可以
+		go func(id int) {
+			defer wg.Done()
+			fmt.Printf("协程 [%d]\n", id)
+		}(i)
+	}
+	wg.Wait()
+
+}
+
+// ===========================================================
+// 5. 观察 goroutine 交错执行
+// goroutine 调度是非确定性的，每次运行的打印顺序可能不同
+// 使用 Sleep 会让出执行权，更容易观察
+// ===========================================================
+func demo5_interleaving() {
+	fmt.Println("\n === 5. goroutine 交错执行 ===")
+	var wg sync.WaitGroup
+
+	printer := func(label string, n int) {
+		defer wg.Done() 
+		for i:= 1; i <= n; i++ {
+			fmt.Printf("%s%d ", label, i)
+			time.Sleep(time.Millisecond)	// 让出时间片，给其它 goroutine
+		}
+	}
+
+	fmt.Println("每次执行顺序可能不同👇")
+	wg.Add(3) 
+	go printer("a", 5)
+	go printer("b", 5)
+	go printer("c", 5)
+	wg.Wait()
+	fmt.Println()
+
+	// 对比：去掉 Sleep 试试
+	fmt.Println("\n去掉 Sleep：一个 goroutine 可能连续跑完整个循环👇")
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		// 捕获范围闭环，让每个子协程的调用栈都安全
-		defer func() {
-			if err := recover(); err != nil {
-				fmt.Printf("拦截成功，检测到子协程 panic， 已经成功隔离，原因为 %v\n", err)
-			}
-		}()
-
-		// 真正执行业务逻辑
-		task()
+		for i := 1; i <= 8; i++ {
+			fmt.Printf("X无Sleep->%d,", i)
+		}
 	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 1; i <= 8; i++ {
+			fmt.Printf("Y无Sleep%d,", i)
+		}
+	}()
+	wg.Wait()
+	fmt.Println()
+
+}
+
+// ===========================================================
+// 6. 创建上万个 goroutine
+// 每个 goroutine 初始栈约 2KB，OS 线程约 1MB
+func demo6_light_weight() {
+	fmt.Println("\n=== 6. goroutine 轻量级特性 ===")
+	fmt.Printf("启动前 goroutne 数: %d\n", runtime.NumGoroutine())
+
+	const N = 10000
+	var wg sync.WaitGroup
+	wg.Add(N)
+
+	start := time.Now() 
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			time.Sleep(10 * time.Millisecond)
+		}()
+	}
+
+	fmt.Printf("创建 %d 个 goroutine 后：%d 个\n", N, runtime.NumGoroutine())
+	wg.Wait()
+	elapsed := time.Since(start)
+	fmt.Printf("全部完成耗时：%v（如果串行需要 %v）\n", elapsed, N*10*time.Millisecond)
 }
 
 func main() {
-	fmt.Println("------------ 多协程异常捕获和捕获次数测试 ---------------")
-
-	testCaptureConut()
-
-	time.Sleep(time.Second * 1)
-	fmt.Println("-------------- 并发防止崩溃测试 ---------------")
-
-	var wg sync.WaitGroup
-
-	SafeGo(&wg, func() {
-		fmt.Println("任务一：我是健康的业务，正常执行")
-	})
-
-	SafeGo(&wg, func() {
-		fmt.Println("任务二：我很危险，我要踩雷了")
-		a := 1
-		b := 0
-		fmt.Println(a / b)
-	})
-
-	wg.Wait()
-	fmt.Println("虽然任务二崩溃了，但是因为 SafeGo 的隔离，主进程顺利完成！")
-
-	// badCapture()		// 解除此行注释就能看到panic
+	// demo1_basic()
+	// demo2_main_goroutine()
+	// demo3_WaitGroup()
+	// demo4_closure()
+	// demo5_interleaving()
+	demo6_light_weight()
 }
