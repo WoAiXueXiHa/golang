@@ -331,6 +331,8 @@ func demo5_show_Map() {
 // func LoadT(addr *T) (val T)
 // func SwapT(addr *T, new T) (old T)
 // func CompareAndSwapT(addr *T, old, new T) (swapped bool)
+// =============================================================
+
 
 func demo6() {
 	var sum int32 = 0
@@ -382,6 +384,45 @@ func demo6_atomic_struct() {
 	fmt.Println("compare st2 and v\n", swapped, v)
 }
 
+// =============================================================
+// 7. sync.Pool使用
+// 内存池组件，实现对象复用，避免创建相同的对象
+// New() 构造函数，指定缓存的类型
+// Get() 取对象
+// Put() 放对象
+// =============================================================
+func demo7_show_Pool() {
+	type Student struct {
+		Name		string
+		Age 		int
+	}
+
+	pool := sync.Pool {
+		// 初始化一个 sync.Pool 对象，返回 Student 指针
+		New: func() interface{} {
+			return &Student {
+				Name: "zhangsan",
+				Age:   18,
+			}
+		},
+	}
+
+	st := pool.Get().(*Student)
+	println(st.Name, st.Age)
+	fmt.Printf("addr is %p\n", st)
+
+	// 修改
+	st.Name = "hghhhhhh"
+	st.Age = 34
+
+	// 回收
+	pool.Put(st)
+
+	st1 := pool.Get().(*Student)
+	println(st1.Name, st1.Age)
+	fmt.Printf("addr1 is %p\n", st1)
+}
+
 func main() {
 	// demo1()
 	// demo1_WaitGroup()
@@ -394,5 +435,6 @@ func main() {
 	// demo5_lock_map()
 	// demo5_show_Map()
 	// demo6()
-	demo6_atomic_struct()
+	// demo6_atomic_struct()
+	demo7_show_Pool()
 }
