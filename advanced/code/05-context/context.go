@@ -37,7 +37,7 @@ func demo1_WithCancel() {
 }
 
 // =================================================
-// 2. context.WithDeadline 使用
+// 2. context.WithDeadline 和 context.WithTimeout使用
 // 取消控制函数
 // =================================================
 func demo2_WithDeadline() {
@@ -45,10 +45,10 @@ func demo2_WithDeadline() {
 		for {
 			select {
 			case <-ctx.Done():
-				fmt.Println("%s exit!\n", name)
+				fmt.Printf("%s exit!\n", name)
 				return 
 			default:
-				fmt.Println("%s watching...\n", name)
+				fmt.Printf("%s watching...\n", name)
 				time.Sleep(time.Second)
 			}
 		}
@@ -59,11 +59,50 @@ func demo2_WithDeadline() {
 	go Watch(ctx, "goroutine2")
 
 	time.Sleep(6 * time.Second)
+	fmt.Println("end watching!!!")
+}
 
+func demo3_WithTimeout() {
+	Watch := func(ctx context.Context, name string) {
+		for {
+			select {
+			case <-ctx.Done():
+				fmt.Printf("%s exit!\n", name)
+				return
+			default:
+				fmt.Printf("%s watching...\n", name)
+				time.Sleep(time.Second)
+			}
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1 * time.Second)
+	defer cancel()
+	go Watch(ctx, "goroutine1")
+	go Watch(ctx, "goroutine2")
+
+	time.Sleep(6 * time.Second)
+	fmt.Println("end watching!!!")
+}
+
+// =================================================
+// 3. context.WithValue 使用
+// =================================================
+func demo4() {
+	func1 := func(ctx context.Context) {
+		fmt.Printf("name is %s\n", ctx.Value("name").(string))
+	}
+
+	ctx := context.WithValue(context.Background(), "name", "vect")
+	go func1(ctx)
+	time.Sleep(time.Second)
 }
 
 
 func main() {
-	demo1_WithCancel()
+	// demo1_WithCancel()
+	// demo2_WithDeadline()
+	// demo3_WithTimeout()
+	demo4()
 }
 
