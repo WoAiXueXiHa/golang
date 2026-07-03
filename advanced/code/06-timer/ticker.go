@@ -36,10 +36,11 @@ func demo1() {
 
 	ch := Watch()
 	time.Sleep(5 * time.Second)
-	ch<- struct{}{}
+	ch <- struct{}{}
 	close(ch)
 }
+
 // Ticker Stop!!! 打印不稳定
-func main() {
-	demo1()
-}
+// func main() {
+// 	demo1()
+// }

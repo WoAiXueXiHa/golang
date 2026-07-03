@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	myMath "learn/golang/basic/01-go-language-struct/myMath"
+	myMath "learn/golang/basic/code/01-go-language-struct/myMath"
 )
 
 func main() {

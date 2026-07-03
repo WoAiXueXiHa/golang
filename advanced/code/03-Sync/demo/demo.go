@@ -438,7 +438,7 @@ func demo9_FlashSale() {
 }
 
 func main() {
-	fmt.Println(`
+	fmt.Print(`
 ╔══════════════════════════════════════════════════════╗
 ║     🎯 sync 包全家桶 Demo                            ║
 ║     每个 demo 间隔 1.5s，看清楚再继续                  ║
