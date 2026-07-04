@@ -57,3 +57,6 @@ app
 ._*
 Thumbtacks.db
 Desktop.ini
+
+.claude/
+CLAUDE.md
