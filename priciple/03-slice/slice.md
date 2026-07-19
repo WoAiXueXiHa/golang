@@ -1,572 +1,484 @@
-# 什么是切片
+# slice 原理剖析
 
-切片是建立在数组之上的抽象类型
+## 为什么需要切片：从数组的定长说起
 
-## 这一章要记住什么
-
-- 切片 header 是值拷贝，底层数组是共享的——传到函数里改元素外部看得见，append 扩容后就跟外部没关系了
-- `append` 返回的不一定和原切片共享底层数组，取决于 cap 有没有余量，所以永远要接收返回值
-- 截取切片 `s[low:high]` 不复制数据，只新建一个 header，cap 会跟着缩（`newCap = oldCap - low`）
-- 删除元素惯用 `append(s[:i], s[i+1:]...)`，但会污染共享底层数组的原切片
-- 想完全独立的副本，只能是 `make` + `copy`，截取做不到
-- **三索引切片 `s[low:high:max]` 可以限制 cap**，防止子切片 append 时意外覆盖父切片数据
-
----
-
-## 数组
-
-Go 语言中数组是一个值，数组变量表示了整个数组，和 C/C++ 不同（指向数组首元素的指针）
-
-利用代码看一下：
+Go 的数组是值类型，变量名代表整个数组，不是指向首元素的指针。
 
 ```go
-package main
-
-import "fmt"
-
-// 将数组传递到函数中，数组的地址不一样
 func test(arr [3]int) {
     fmt.Printf("arr 内: %p\n", &arr)
 }
-func f1() {
+
+func main() {
     arr := [3]int{1, 2, 3}
     test(arr)
     fmt.Printf("arr 外: %p\n", &arr)
 }
-
-// 拷贝数组，修改旧数组，对新数组无影响
-func f2() {
-    arr1 := [3]int{1, 2, 3}
-    arr2 := arr1
-
-    arr1[0] = 100
-    fmt.Println(arr1)
-    fmt.Println(arr2)
-}
-
-func main() {
-    f1()
-    fmt.Printf("---------------------------\n")
-    f2()
-}
-
 ```
 
-输出：
-
-```bash
-[vect@ubuntu-dev ~/golang/priciple/03-slice/demo1]$ go run demo1.go 
+```text
 arr 内: 0xc0000a0018
 arr 外: 0xc0000a0000
----------------------------
-[100 2 3]
-[1 2 3]
 ```
 
-可以发现：
-
-- 数组传值到函数中，数组的地址不一样
-- 拷贝数组，修改旧的数组，对新的数组无影响
-
-Go 的数组类似 C++ 的 array，定长数组，长度是固定的
-
-而 slice 就类似 C++ 的 vector，变长数组，动态扩容
-
-
-
-# 切片底层原理剖析
-
-## 切片结构
-
-切片底层就是一个结构体：
-
-```golang
-type slice struct {
-    // 指向一块连续内存空间的起始位置
-    array unsafe.Pointer
-    len int
-    cap int
-}
-```
-
-## 切片扩容机制
-
-### 1.计算目标容量（预估阶段）
-
-当 slice 触发 `append` 导致超出当前容量时，Go 会通过以下两个阶段来决定最终的容量。首先是计算预估容量：
-
-* **case1**：新切片长度 > 旧切片容量的两倍，则预估容量直接定为**新切片长度**。
-* **case2**：若不满足 case1，则根据旧切片容量进行平滑过渡：
-  1. **旧切片容量 < 256**：新切片的预估容量直接翻倍，即 `newcap = 2 * oldcap`。
-  2. **旧切片容量 $\ge$ 256**：每次扩大为原来的 1.25 倍，并且每次为了平滑过渡，还会固定加上 $\frac{3}{4} \times 256$（即 `+192`），直到预估容量 $\ge$ 新切片长度。
-
-```golang
-// newcap = newcap * 1.25 + 192 的底层高效位移写法
-newcap += (newcap + 3*threshold) / 4
-```
-
-### 2. 内存对齐（最终容量确定）
-
-> **关键结论**：计算出预估容量后，**最终容量并不一定等于预估容量，而是由底层内存分配器决定。**
-
-Go 运行时会调用 `roundupsize` 函数，将预估容量占用的内存大小（预估容量 $\times$ 元素大小）向上对齐到与其最接近的底层内存规格（Size Class）
-
-* **例如**：若预估容量计算出需要 300 字节，而 Go 内存分配器现有的固定分配规格中没有 300 字节，只有 320 字节，则系统会直接分配 320 字节。此时反向推导出的最终 `cap` 就会比预估值稍大一些。
-* **不严谨之处在于**：这种机制虽然会导致容量多出预期的几个元素，但在宏观上极大减少了堆内存碎片，并加速了内存分配效率。
-
-
-
-## 和 C++ vector 进行对比
-
-先说结论：
-
-**扩容策略差异：** vector 追求 **确定性的几何增长（1.5倍或2倍）**，slice 计算出预估容量后，**强行接入内存对齐**，最终容量由底层内存分配器决定
-
-用个表格总结：
-
-| **维度**           | **Go slice**                                               | **C++ std::vector**                   |
-| ------------------ | ---------------------------------------------------------- | ------------------------------------- |
-| **扩容系数**       | $<256$ 元素时 2 倍；$\ge 256$ 时过渡到 1.25 倍 + 192       | GCC/Clang 固定 2 倍；MSVC 固定 1.5 倍 |
-| **最终容量确定性** | **不确定**。受限于底层内存分配器的 Size Class 规格向上取整 | **确定**                              |
-
-
-
-## 内存对齐规则对比
-
-内存对齐本质是**用空间换时间，确保CPU能通过一次总线周期高效读取数据**
-
-### C++ 内存对齐
-
-前提：编译器都有默认的**对齐数**，64位默认为8
-
-规则一：**成员自身对齐（决定字段偏移量）**
-
-$min(自身类型大小，默认对齐数)$的整数倍
-
-规则二：**结构体整体对齐（决定结构体最终大小）**
-
-结构体大小=$min(内部最大基础成员的大小，默认对齐数)$的整数倍
-
-例如：64位系统
-
-```cpp
-struct A {
-    char c;
-    int b;
-    double c;
-}
-c _ _ _ b b b b c c c c c c c c
-0 1 2 3 4 5 6 7 8 .......    15
-```
-
-最终大小为16字节
-
-
-
-### Go 内存对齐
-
-和 C++ 完全一致，但多了针对垃圾回收机制的特殊**尾部边界处理**：
-
-**零大小尾部阻隔：**
-
-若一个结构体的**最后一个字段**的大小是0（例如空结构体`struct{}`），且该结构体还会被其他对象引用或者作为数组元素，Go 编译器会在尾部**强制填充1字节**并进行对齐
-
-设计原因：
-
-若不填充，指向该空结构体的指针就会直接指向结构体外部的下一个对象，误认为下一个对象还在被引用，导致内存泄漏
-
-还是64位系统：
-
-```golang
-type BadLayout struct {
-    a int32      // 4 字节
-    b struct{}   // 0 字节，但处于尾部。为了 GC 安全，强行填充并对齐至 4 字节
-} // 总大小 = 4 + 4 = 8 字节
-
-type GoodLayout struct {
-    b struct{}   // 0 字节，处于头部
-    a int32      // 4 字节
-} // 总大小 = 0 + 4 = 4 字节 (无需尾部填充)
-```
-
-
-
-# 切片行为分析
-
-## 1. 切片传参的本质：值传递 + 共享底层数组
-
-```golang
-package main
-
-import (
-	"fmt"
-	"reflect"
-	"unsafe"
-)
-
-func PrintSlice(s *[]int) {
-	// Go 是强类型，正常情况 *[]int 绝对不能转成 *reflect.SliceHeader
-	// 而 unsafe.Pointer 类似 void*，可以接收任意类型指针
-	// 对于 reflect.SliceHeader
-	// type SliceHeader struct {
-	// 	Data uintptr  // 对应底层数组地址，这个不是指针，就是存了地址数字的类型而已
-	// 	Len  int      // 对应长度
-	// 	Cap  int      // 对应容量
-	// }
-
-	ss := (*reflect.SliceHeader)(unsafe.Pointer(s))
-
-	fmt.Printf("slice struct: %+v, slice is %v\n", ss, s)
-}
-
-func test(s []int) {
-	PrintSlice((&s))
-}
-
-func demo2_slice_func() {
-	s := make([]int, 5, 10)
-	PrintSlice(&s)
-	test(s)
-}
-
-func main() {
-	demo2_slice_func()
-}
-
-```
-
-输出：
-
-```bash
-slice struct: &{Data:824633884752 Len:5 Cap:10}, slice is &[0 0 0 0 0]
-slice struct: &{Data:824633884752 Len:5 Cap:10}, slice is &[0 0 0 0 0]
-```
-
-先看代码做了什么：用 `make([]int, 5, 10)` 创建一个 len=5、cap=10 的切片，在 main 里打印一次 header，传到 `test` 函数里再打印一次。
-
-两次输出的 **Data 地址完全一样**。
-
-这说明什么？Go 所有函数参数都是值传递，切片也不例外——传进去的是 slice header 的一份**拷贝**。但 header 里的 Data 字段是个指针（准确说是 uintptr，存的是地址值），拷贝后仍然指向**同一块底层数组**。
-
-```text
-main 里的 s:                     test 里的 s (拷贝):
-+------------------+           +------------------+
-| Data: 0x...4752  |---┐       | Data: 0x...4752  |---┐
-| Len:  5          |   |       | Len:  5          |   |
-| Cap:  10         |   |       | Cap:  10         |   |
-+------------------+   |       +------------------+   |
-                       |                              |
-                       v  同一块底层数组                v
-              +-----------------------------------+
-              | [0] [1] [2] [3] [4] (预留 5 个空位) |
-              +-----------------------------------+
-               len = 5                cap = 10
-```
-
-两个 header 是独立的（Len/Cap 互不影响），但它们看到的底层数组是同一片内存。
-
-总结一下：
-
-> 切片传到函数里，切片 header 是复制品，底层数组是共享的
-
-## 2. 修改切片：下标修改 vs append
-
-```golang
-package main
-
-import (
-	"fmt"
-	"reflect"
-	"unsafe"
-)
-
-func PrintSlice(s *[]int) {
-	ss := (*reflect.SliceHeader)(unsafe.Pointer(s))
-
-	fmt.Printf("slice struct: %+v, slice is %v\n", ss, s)
-}
-
-func test(s []int) {
-	PrintSlice((&s))
-}
-
-// 底层数组不变
-func demo3_case1(s []int) {
-	s[1] = 1000
-	PrintSlice(&s)
-}
-
-// 底层数组变化
-func demo3_case2(s []int) {
-	s = append(s, 1000)
-	s[1] = 1000
-	PrintSlice(&s)
-}
-func demo3_infunc_modify() {
-	s := make([]int, 5)
-	demo3_case1(s)
-	demo3_case2(s)
-	PrintSlice(&s)
-}
-
-func main() {
-	demo3_infunc_modify()
-}
-
-```
-
-输出：
-
-```bash
-slice struct: &{Data:824633811472 Len:5 Cap:5}, slice is &[0 1000 0 0 0]
-slice struct: &{Data:824633884832 Len:6 Cap:10}, slice is &[0 1000 0 0 0 1000]
-slice struct: &{Data:824633811472 Len:5 Cap:5}, slice is &[0 1000 0 0 0]
-```
-
-对于通过索引修改：
-
-调用前 `s := make([]int, 5)`，底层数组全是 0。`s[1] = 1000` 直接修改了底层数组的第 1 号位置。外部切片和它共享同一个底层数组，所以外部看到的也是 `[0 1000 0 0 0]`。
-
-对于先 append 再通过索引修改
+同一份数据，函数内外的地址不同——传参发生了完整拷贝。赋值也一样：
 
 ```go
-func demo3_case2(s []int) {
-    s = append(s, 1000)   // len==cap==5，append 触发扩容！
-    s[1] = 1000           // 这次改的是新数组
+arr1 := [3]int{1, 2, 3}
+arr2 := arr1
+arr1[0] = 100
+fmt.Println(arr1) // [100 2 3]
+fmt.Println(arr2) // [1 2 3]
+```
+
+数组的值语义保证了隔离性，但代价明显：传参拷贝全部数据，长度是类型的一部分（`[3]int` 和 `[5]int` 是不同的类型），无法在运行时动态调整大小。
+
+切片通过引入一个间接层解决了这两个问题——不拷贝全部数据，只在需要增长时分配新空间。
+
+> 数组的值语义保证了隔离性，代价是定长和传参拷贝。切片通过间接层解决了这两个问题，代价是共享带来的不确定性。
+
+---
+
+## 切片的底层结构：一个三元组
+
+`runtime/slice.go:16`：
+
+```go
+type slice struct {
+    array unsafe.Pointer
+    len   int
+    cap   int
 }
 ```
 
-关键在这里：`make([]int, 5)` 创建的切片 len=cap=5，**没有预留空间**。`append(s, 1000)` 发现 len(6) > cap(5)，必须扩容——于是分配一块**新**的底层数组，把旧元素拷过去，再追加 1000。
+64 位平台上占 24 字节（array 8 + len 8 + cap 8）。任何时候你拿到的切片变量，都是这个三元组的一份拷贝。
 
-此时函数里的 `s` 已经指向新数组了，后续 `s[1] = 1000` 改的是新数组，**跟外部切片已经没关系了**。
+用一个工具函数把这三个字段暴露出来——后面的分析会反复用到：
 
-```text
-append 前（case1 执行后）:
-外部 s:                         case2 内 s:
-+------------------+            +------------------+
-| Data: 0x...1472  |--+        | Data: 0x...1472  |--+
-| Len:  5          |  |        | Len:  5          |  |
-| Cap:  5          |  |        | Cap:  5          |  |
-+------------------+  |        +------------------+  |
-                      +-------> [0,1000,0,0,0]  <----+
-                                (底层数组，cap=5，已满)
-
-append(s, 1000) 之后:
-外部 s:                         case2 内 s (重新赋值后):
-+------------------+            +------------------+
-| Data: 0x...1472  |--+        | Data: 0x...4752  |-----+
-| Len:  5          |  |        | Len:  6          |     |
-| Cap:  5          |  |        | Cap:  10         |     |
-+------------------+  |        +------------------+     |
-                      |                                 |
-                      v                                 v
-              [0,1000,0,0,0]              [0,1000,0,0,0,1000]
-              (旧数组，外部还指着它)         (新数组，函数里的 s 指着它)
-                                          s[1]=1000 改这里
-```
-
-输出验证了这一点：
-
-- case1 内 Data 和外部一样（`0x...1472`）
-- case2 内 Data 变了（`0x...4752`），是新数组的地址
-- 外部 Data 仍然是旧地址 `0x...1472`，且值还是 case1 留下的 `[0 1000 0 0 0]`
-
-总结一下：
-
-> 通过下标改元素，影响的是共享的底层数组，外部可见。通过 append 追加导致扩容时，函数内部的 s 指向新数组，后续操作跟外部完全脱钩。**能不能影响外部，取决于 append 是否触发扩容。**
-
-## 3. 截取切片：新建视图，不复制数据
-
-```golang
-package main
-
-import (
-	"fmt"
-	"reflect"
-	"unsafe"
-)
-
+```go
 func PrintSlice(s *[]int) {
-	ss := (*reflect.SliceHeader)(unsafe.Pointer(s))
-
-	fmt.Printf("slice struct: %+v, slice is %v\n", ss, s)
+    ss := (*reflect.SliceHeader)(unsafe.Pointer(s))
+    fmt.Printf("slice struct: %+v, slice is %v\n", ss, s)
 }
-
-func case1(s []int) {
-	s = s[1:]
-	PrintSlice(&s)
-}
-
-func case2(s []int) {
-	s = s[1:3]
-	PrintSlice(&s)
-}
-
-func case3(s []int) {
-	s = s[len(s)-1:]
-	PrintSlice(&s)
-}
-
-func case4(s []int) {
-	s1 := s[2:]
-	PrintSlice(&s1)
-}
-
-func main() {
-	s := make([]int, 5)
-
-	case1(s)
-	case2(s)
-	case3(s)
-	case4(s)
-
-	PrintSlice(&s)
-}
-
 ```
 
-输出：
+`reflect.SliceHeader` 与 runtime 的 slice 结构对应：`Data uintptr`、`Len int`、`Cap int`。`PrintSlice` 通过 `unsafe.Pointer` 强制转换来读取这三个内部字段。
 
-```bash
-slice struct: &{Data:824633811480 Len:4 Cap:4}, slice is &[0 0 0 0]
-slice struct: &{Data:824633811480 Len:2 Cap:4}, slice is &[0 0]
-slice struct: &{Data:824633811504 Len:1 Cap:1}, slice is &[0]
-slice struct: &{Data:824633811488 Len:3 Cap:3}, slice is &[0 0 0]
-slice struct: &{Data:824633811472 Len:5 Cap:5}, slice is &[0 0 0 0 0]
+```go
+s := make([]int, 5, 10)
+PrintSlice(&s)
 ```
-
-原始切片 `s := make([]int, 5)` 生成 5 个零值 int，Data 从 `0x...1472` 开始，每个 int 占 8 字节。
 
 ```text
-底层数组 (每个格子 8 字节):
-地址:   0x1472  0x147A  0x1482  0x148A  0x1492  (十六进制，差 8)
+slice struct: &{Data:824633884752 Len:5 Cap:10}, slice is &[0 0 0 0 0]
+```
+
+内存布局：
+
+```text
++------------------+
+| Data  ──────────────────┐
+| Len:  5          |      |
+| Cap:  10         |      |
++------------------+      |
+                          v
+               +---------------------------------------+
+               | [0] [1] [2] [3] [4] [ ] [ ] [ ] [ ] [ ] |
+               +---------------------------------------+
+                 len = 5                 cap = 10
+```
+
+三个字段的约束：
+
+- `len` — 当前可安全访问的元素数。`s[len]` panic。
+- `cap` — 从 Data 开始的总容量。`cap - len` 是预留空位。
+- `cap >= len`，编译器和运行时的硬约束。
+
+作为对比：string 底层只有 `str unsafe.Pointer` + `len int`，没有 cap——不可变意味着不需要预留增长空间。切片多出的 cap 恰好对应"可变长"的职责。
+
+> 切片在运行时是一个三元组 `{array, len, cap}`。理解这三个字段的各自含义和约束，是推理所有切片行为的基础。
+
+---
+
+## 扩容机制：从 append 到 mallocgc
+
+**触发条件**
+
+- `newLen <= oldCap` → 不扩容，原地追加。
+- `newLen > oldCap` → 调用 `runtime.growslice`。
+
+不扩容时，append 仍返回新的 header（len 变了），但 Data 指向同一块内存：
+
+```go
+s1 := make([]int, 3, 4)  // len=3, cap=4
+s2 := append(s1, 1)       // newLen=4 <= cap=4
+
+PrintSlice(&s1)  // Data:0x...7584 Len:3 Cap:4
+PrintSlice(&s2)  // Data:0x...7584 Len:4 Cap:4  ← Data 相同
+```
+
+**nextslicecap：增长公式**
+
+一旦扩容，`growslice` 首先调用 `nextslicecap`（`runtime/slice.go:326`）计算预估值：
+
+```go
+func nextslicecap(newLen, oldCap int) int {
+    newcap := oldCap
+    doublecap := newcap + newcap
+    if newLen > doublecap {
+        return newLen     // 一次追加了大量元素
+    }
+
+    const threshold = 256
+    if oldCap < threshold {
+        return doublecap  // 小于 256：直接翻倍
+    }
+    for {
+        newcap += (newcap + 3*threshold) >> 2  // ≈ 1.25 倍
+        if uint(newcap) >= uint(newLen) {
+            break
+        }
+    }
+    if newcap <= 0 {
+        return newLen
+    }
+    return newcap
+}
+```
+
+三条路径：
+
+1. `newLen > 2*oldCap`：直接用 `newLen`。
+2. `oldCap < 256`：翻倍，`newcap = 2*oldCap`。
+3. `oldCap >= 256`：迭代增长，每次 $$newcap = newcap + \frac{newcap + 768}{4}$$，即约 1.25 倍，直到 >= newLen。
+
+设计意图：小切片快速翻倍到达 256，大切片平滑过渡，避免 2 倍扩容的巨大浪费。
+
+> nextslicecap 实现了从 2 倍到约 1.25 倍的平滑过渡。但这只是"预计算"——最终容量还要经过 malloc 规格取整。
+
+![slice扩容选择](https://gitee.com/binary-whispers/pic/raw/master///20260711211702025.png)
+
+**roundupsize：malloc 规格取整**
+
+这里先区分两个容易混淆的概念。
+
+**结构体字段对齐**（C++ 也有的那个）：编译器在结构体字段之间插入 padding，使每个字段落在自身大小的整数倍地址上。Go 和 C++ 规则一致，仅多了一个 GC 相关的零大小尾部填充特例。
+
+**malloc 规格取整**（本节讨论的）：Go 的 malloc 不会你申请多少字节就恰好分配多少。它预定义了若干固定大小的 slot，分配时把你的请求量向上取整到最近的 slot 尺寸。这跟结构体内部字段排列无关——它只管"你要多少字节，我实际给你多少字节"。
+
+`growslice` 计算出 nextslicecap 的预估元素数后，接下来的工作是：把元素数换算成字节数，交给 malloc，拿到对齐后的字节数，再反算回最终的 cap。
+
+`growslice` 中处理这步的代码（`runtime/slice.go:210-243`），以最典型的 `int` 为例（`et.Size_ == goarch.PtrSize` 分支）：
+
+```go
+case et.Size_ == goarch.PtrSize:
+    lenmem = uintptr(oldLen) * goarch.PtrSize
+    newlenmem = uintptr(newLen) * goarch.PtrSize
+    capmem = roundupsize(uintptr(newcap)*goarch.PtrSize, noscan)
+    overflow = uintptr(newcap) > maxAlloc/goarch.PtrSize
+    newcap = int(capmem / goarch.PtrSize)
+```
+
+三步：`newcap * 8` 得到字节数 → `roundupsize` 取整 → 除以 8 反算回最终 cap。
+
+`roundupsize` 本身在 `runtime/msize.go:16`：
+
+```go
+func roundupsize(size uintptr, noscan bool) (reqSize uintptr) {
+    reqSize = size
+    if reqSize <= maxSmallSize-gc.MallocHeaderSize {
+        // 小对象
+        if !noscan && reqSize > gc.MinSizeForMallocHeader {
+            reqSize += gc.MallocHeaderSize
+        }
+        if reqSize <= gc.SmallSizeMax-8 {
+            return uintptr(gc.SizeClassToSize[gc.SizeToSizeClass8[divRoundUp(reqSize, gc.SmallSizeDiv)]]) - (reqSize - size)
+        }
+        return uintptr(gc.SizeClassToSize[gc.SizeToSizeClass128[divRoundUp(reqSize-gc.SmallSizeMax, gc.LargeSizeDiv)]]) - (reqSize - size)
+    }
+    // 大对象：向上取整到页边界
+    reqSize += pageSize - 1
+    if reqSize < size {
+        return size
+    }
+    return reqSize &^ (pageSize - 1)
+}
+```
+
+逻辑分三层：
+
+1. 请求大小 `<= 32760` 字节：走小对象路径。如果对象含指针且超过阈值，先加 8 字节的 malloc header。
+2. 请求大小 `<= 1024` 字节：以 8 字节粒度查 `SizeToSizeClass8` 表（129 项）。例如要 6 字节 → `divRoundUp(6, 8) = 1` → 查表得 class 1 → `SizeClassToSize[1] = 8` → 返回 8。
+3. 请求大小 `1025 ~ 32760` 字节：以 128 字节粒度查 `SizeToSizeClass128` 表（249 项）。
+4. 请求大小 `> 32760` 字节：直接向上取整到页边界（默认 8192 字节）。
+![slice规格取整](https://gitee.com/binary-whispers/pic/raw/master///20260711220658128.png)
+
+`SizeClassToSize` 表定义了所有 68 个 size class 的字节数（`internal/runtime/gc/sizeclasses.go`），部分如下：
+
+| class | bytes/obj | class | bytes/obj |
+|-------|-----------|-------|-----------|
+| 1     | 8         | 10    | 128       |
+| 2     | 16        | 18    | 256       |
+| 3     | 24        | 26    | 512       |
+| 4     | 32        | 32    | 1024      |
+| 5     | 48        | 44    | 4096      |
+| 6     | 64        | 51    | 8192      |
+
+看两个具体例子。
+
+`[]int`（64 位平台，元素 8 字节）：
+
+```
+s := make([]int, 3, 3), append 1 个元素:
+  nextslicecap: 3<256 → 6
+  capmem = roundupsize(6 × 8)
+         = roundupsize(48)
+         → 48 落在 1024 以内, divRoundUp(48,8)=6, SizeToSizeClass8[6]=class 5
+         → SizeClassToSize[5] = 48  ← 恰好匹配
+  newcap = 48 / 8 = 6
+```
+
+`[]byte`（元素 1 字节）：
+
+```
+s := make([]byte, 3, 3), append 1 个元素:
+  nextslicecap: 3<256 → 6
+  capmem = roundupsize(6 × 1)
+         = roundupsize(6)
+         → divRoundUp(6,8)=1, SizeToSizeClass8[1]=class 1
+         → SizeClassToSize[1] = 8  ← 6 被取整到 8
+  newcap = 8 / 1 = 8
+```
+
+nextslicecap 说 6，最终 cap 是 8——多了 2 个元素。元素类型越小，这种"意外扩容"越显著。`[]byte` 是最极端的情况（1 字节元素），`[]int` 等大元素因为乘以 8 后更容易命中现有 size class，偏差通常较小。
+
+这个机制不是设计缺陷。malloc 预先准备好 68 种固定尺寸的空闲链表，分配时直接从对应尺寸的链表里取——不需要切分、不需要合并，速度极快。代价是实际分配的量可能比你请求的多几个字节。
+
+> 最终容量 = nextslicecap 预估值 × 元素大小，经 `roundupsize` 查 size class 表向上取整后再反算。这个"不精确"不是缺陷，而是用少量内存冗余换取零碎片的快速分配。
+
+**mallocgc 与 memmove**
+
+确定了最终 `capmem` 后，`growslice` 调用 `mallocgc` 分配，`memmove` 拷贝旧元素，返回新的 slice header（`runtime/slice.go:263-286`）。
+
+两条路径：元素不含指针（`int`、`byte`），`mallocgc(capmem, nil, false)` 后只清零尾部未覆盖区域；元素含指针（`string`、`*T`），`mallocgc(capmem, et, true)` 时整块已清零，通过写屏障确保 GC 追踪。拷贝完成后，旧数组如果没有其他切片 header 引用则被 GC 回收——这是"大切片截取与内存滞留"的根源。
+
+> 扩容实质是"分配新数组、拷贝旧数据、抛弃旧数组"三步。旧数组的生死取决于是否还有其他切片引用它。
+
+**完整链路**
+
+以 `s := make([]int, 3, 3); s = append(s, 1, 2)` 为例（一次追加 2 个元素）：
+
+| 步骤 | 操作 | 输入 | 输出 |
+|------|------|------|------|
+| 触发 | `len=3, cap=3, num=2` | `newLen=5 > cap=3` | 调用 growslice |
+| nextslicecap | `oldCap=3, newLen=5` | `3<256,dobulecap=6>=5` | return 6 |
+| 字节换算 | `newcap × 8` | `6 × 8 = 48 bytes` | 传入 roundupsize |
+| roundupsize | 查 SizeToSizeClass8[6] → class 5 | `SizeClassToSize[5]` | 返回 48 |
+| 反算 cap | `capmem / 8` | `48 / 8` | `newcap = 6` |
+| mallocgc | 分配 48 字节 | | 新数组 |
+| memmove | 拷贝 3 个 int（24 字节） | | 返回 `slice{p, 5, 6}` |
+
+预估值恰好等于最终值。对于 `[]byte`，roundupsize 的修正会更显著。
+
+---
+
+## 切片传参：拷贝的是 header，共享的是底层数组
+
+Go 函数参数全是值拷贝。传入函数的 header 有独立的 Data/Len/Cap 字段，但 Data 值指向原底层数组：
+
+```go
+func demo() {
+    s := make([]int, 5, 10)
+    PrintSlice(&s)  // main 中的 header
+    test(s)
+}
+func test(s []int) {
+    PrintSlice(&s)  // 函数内部的 header
+}
+```
+
+```text
+slice struct: &{Data:824633884752 Len:5 Cap:10}, slice is &[0 0 0 0 0]
+slice struct: &{Data:824633884752 Len:5 Cap:10}, slice is &[0 0 0 0 0]
+```
+
+两个 header 在各自的栈帧中，但 Data 字段完全相同。
+
+```text
+main 的 s:                  test 的 s (拷贝):
++------------------+       +------------------+
+| Data: 0x...4752  |--+    | Data: 0x...4752  |--+
+| Len:  5          |  |    | Len:  5          |  |
+| Cap:  10         |  |    | Cap:  10         |  |
++------------------+  |    +------------------+  |
+                      +----> 同一块底层数组  <-----+
+```
+
+基于此，分两种情况。
+
+**索引修改**：直接作用在共享底层数组上，外部可见。
+
+```go
+func modify(s []int) {
+    s[1] = 1000
+}
+s := make([]int, 5)
+modify(s)
+PrintSlice(&s)  // &[0 1000 0 0 0] — Data 不变，值变了
+```
+
+**先 append 扩容再修改**：函数内的 s 指向了新数组，外部还在旧数组。
+
+```go
+func modify(s []int) {
+    s = append(s, 1000)  // len==cap==5 → 扩容！新数组
+    s[1] = 1000          // 改的是新数组
+}
+s := make([]int, 5)      // len=5, cap=5，没有预留
+modify(s)
+PrintSlice(&s)  // &[0 0 0 0 0] — 外部完全不受影响
+```
+
+```text
+函数内: &{Data:824633884832 Len:6 Cap:10}, slice is &[0 1000 0 0 0 1000]
+外部:   &{Data:824633811472 Len:5 Cap:5},   slice is &[0 0 0 0 0]
+```
+
+Data 完全不同——append 扩容后，局部 header 换到了新数组。外部 header 指向旧数组，完全不知情。这就是为什么必须 `s = append(s, x)`。
+
+> 切片传参时，header 是复制品，底层数组是共享的。能否通过函数影响外部，取决于操作的是共享内存（索引修改）还是扩容后的私有新内存。
+
+---
+
+## append 的两种路径：原地与扩容
+
+把 append 的行为独立看：
+
+```go
+case1: s1 := make([]int, 3, 3); s1 = append(s1, 1)     // cap 已满 → 扩容
+case2: s1 := make([]int, 3, 4); s2 := append(s1, 1)      // cap 有余 → 原地
+case3: s1 := make([]int, 3, 3); s2 := append(s1, 1)      // cap 已满 → 扩容
+```
+
+```text
+case1: &{Data:0x...1472 Len:4 Cap:6}, slice is &[0 0 0 1]
+case2: &{Data:0x...7584 Len:3 Cap:4}, slice is &[0 0 0]
+       &{Data:0x...7584 Len:4 Cap:4}, slice is &[0 0 0 1]  ← Data 相同！
+case3: &{Data:0x...9424 Len:3 Cap:3}, slice is &[0 0 0]
+       &{Data:0x...1520 Len:4 Cap:6}, slice is &[0 0 0 1]  ← Data 不同
+```
+
+| Case | 原始切片 | append 后 | 扩容 | Data 变 |
+|------|----------|-----------|------|---------|
+| case1 | `len=3, cap=3` | `len=4, cap=6` | 是 | 变 |
+| case2 | `len=3, cap=4` | `len=4, cap=4` | 否 | 不变 |
+| case3 | `len=3, cap=3` | `len=4, cap=6` | 是 | 变 |
+
+case2 最值得关注：s1 和 s2 共享底层数组，但 s1 的 len=3 看不到 s2 写入的第 4 个元素。
+
+```text
+append 前: +---+---+---+---+
+           | 0 | 0 | 0 |   |  len=3, cap=4
+           +---+---+---+---+
+
+append 后: +---+---+---+---+
+           | 0 | 0 | 0 | 1 |  len=4, cap=4 (s2 能看到，s1 不能)
+           +---+---+---+---+
+```
+
+> append 返回的切片是否和原切片共享底层数组，取决于 cap 是否还有余量。正是这种不确定性，让 `s = append(s, x)` 成为必须遵守的规则。
+
+---
+
+## 截取切片：新 header，不复制数据
+
+`newSlice := oldSlice[low:high]` 只构造一个新 header：Data 指针偏移 low 个元素，Len 和 Cap 重新计算。不分配新内存。
+
+```go
+s := make([]int, 5)
+```
+
+```go
+s1 := s[1:]    // Data + 8,  Len=4, Cap=4
+s2 := s[1:3]   // Data + 8,  Len=2, Cap=4  ← Cap > Len！
+s3 := s[4:]    // Data + 32, Len=1, Cap=1
+s4 := s[2:]    // Data + 16, Len=3, Cap=3
+```
+
+```text
+s[1:]:   &{Data:0x...1480 Len:4 Cap:4}, slice is &[0 0 0 0]
+s[1:3]:  &{Data:0x...1480 Len:2 Cap:4}, slice is &[0 0]
+s[4:]:   &{Data:0x...1504 Len:1 Cap:1}, slice is &[0]
+s[2:]:   &{Data:0x...1488 Len:3 Cap:3}, slice is &[0 0 0]
+原始 s:  &{Data:0x...1472 Len:5 Cap:5}, slice is &[0 0 0 0 0]
+```
+
+通用公式（约束 $0 \le low \le high \le cap(oldSlice)$）：
+
+$$
+newData = oldData + low \times sizeof(element)
+$$
+$$
+newLen = high - low
+$$
+$$
+newCap = oldCap - low
+$$
+
+```text
+底层数组 (每格 8 字节):
+地址:   0x1472  0x147A  0x1482  0x148A  0x1492
        +-------+-------+-------+-------+-------+
        |  [0]  |  [1]  |  [2]  |  [3]  |  [4]  |
        +-------+-------+-------+-------+-------+
-         ^                                       ^
-         |                                       |
-      原始 s.Data                          原始 s 能看到的最远位置
-      (0x...1472)                          (0x...1472 + 5*8)
+         ^       ^       ^       ^       ^
+       s.Data  s[1:].Data  s[2:].Data  s[4:].Data
 ```
 
-四个 case 分别做了不同截取，看输出数据来推理规律：
+注意 `s[1:3]`：Len=2 但 Cap=4。子切片的 cap 比 len 大，append 时如果不超过 cap=4，会直接在原底层数组上写入——这是"删除元素污染"的根源。
 
-| 操作     | Data 地址   | 相比原 Data 偏移   | Len  | Cap  |
-| -------- | ----------- | ------------------ | ---- | ---- |
-| 原始 `s` | `0x...1472` | 0                  | 5    | 5    |
-| `s[1:]`  | `0x...1480` | +8（跳 1 个 int）  | 4    | 4    |
-| `s[1:3]` | `0x...1480` | +8（跳 1 个 int）  | 2    | 4    |
-| `s[4:]`  | `0x...1504` | +32（跳 4 个 int） | 1    | 1    |
-| `s[2:]`  | `0x...1488` | +16（跳 2 个 int） | 3    | 3    |
+> 截取就是"换个角度看同一块内存"——Data 后移、Len 缩短、Cap 缩短，没有数据拷贝。所有截取得到的切片共享同一块底层数组。
 
-规律非常清楚：**`s[i:j]` 不会分配新内存，只是构造了一个新的 slice header。**
+---
+
+## 删除元素：append 拼接的陷阱
+
+Go 惯用的删除写法：
+
+```go
+s = append(s[:i], s[i+1:]...)
+```
+
+干净，但会在共享底层数组上留下痕迹：
+
+```go
+s := []int{0, 1, 2, 3, 4}
+s1 := append(s[:1], s[2:]...)  // 删除索引 1（值 1）
+
+PrintSlice(&s)   // &[0 2 3 4 4]  ← 原切片被污染！
+PrintSlice(&s1)  // &[0 2 3 4]    ← 正确的逻辑结果
+```
 
 ```text
-s[1:]  = s[1:5] → Data = 原Data + 1*8, Len = 4, Cap = 原Cap - 1
-s[1:3]          → Data = 原Data + 1*8, Len = 2, Cap = 原Cap - 1
-s[4:]  = s[4:5] → Data = 原Data + 4*8, Len = 1, Cap = 原Cap - 1
-s[2:]  = s[2:5] → Data = 原Data + 2*8, Len = 3, Cap = 原Cap - 2
-```
-
-通用公式（`s[low:high]`）：
-
-- `newData = oldData + low * sizeof(element)`
-- `newLen = high - low`
-- `newCap = oldCap - low`
-
-注意 `s[1:3]` 虽然 Len 只有 2，但 Cap 还有 4——说明它"记得"自己底层数组从位置 1 往后还有 3 个元素的空间（只是当前不暴露）。这意味着如果对它做 append，只要不超出 cap，**仍然会在原底层数组上操作**。
-
-原始 `s` 的 Data、Len、Cap 全程不变——四个 case 里截取出的都是新 header，赋值给了函数内的局部变量，不影响外部。
-
-总结一下：
-
-> 截取切片就是"换个角度看同一块内存"。Data 指针往后挪、Len 缩短、Cap 缩短，没有数据拷贝。所有截取出来的切片共享底层数组，一个改了元素，其他都看得见。
-
-## 4. 删除元素：append 拼接的陷阱
-
-```golang
-package main
-
-import (
-	"fmt"
-	"reflect"
-	"unsafe"
-)
-
-func PrintSlice(s *[]int) {
-	ss := (*reflect.SliceHeader)(unsafe.Pointer(s))
-
-	fmt.Printf("slice struct: %+v, slice is %v\n", ss, s)
-}
-
-func main() {
-	s := []int{0, 1, 2, 3, 4}
-
-	_ = s[4]
-	PrintSlice(&s)
-	// 删除第一个元素，从0开始计数
-	// [0,1) + [2, len(s))
-	s1 := append(s[:1], s[2:]...)
-	{
-		// 拷贝元素
-		// 0, 1, 2, 3, 4
-		// 0, 2, 3, 4, 4
-	}
-
-	PrintSlice(&s1)
-	PrintSlice(&s)
-
-	// 访问原切片
-	_ = s[4]
-	// 访问从原切片中删除了一个元素的切片
-	_ = s1[4]
-
-}
-
-```
-
-输出：
-
-```bash
 slice struct: &{Data:824634392576 Len:5 Cap:5}, slice is &[0 1 2 3 4]
 slice struct: &{Data:824634392576 Len:4 Cap:5}, slice is &[0 2 3 4]
 slice struct: &{Data:824634392576 Len:5 Cap:5}, slice is &[0 2 3 4 4]
-panic: runtime error: index out of range [4] with length 4
-
-goroutine 1 [running]:
-main.main()
-        /home/vect/golang/priciple/03-slice/demo4/demo4_delete.go:35 +0x1b6
-exit status 2
 ```
 
-
-
-代码要做的事：从 `[0, 1, 2, 3, 4]` 里删除索引 1 的元素（值 `1`），得到 `[0, 2, 3, 4]`。
-
-Go 没有内置的删除切片元素的方法，惯用写法是 `s = append(s[:i], s[i+1:]...)`。
-
-拆解这个过程：
+拆解过程：
 
 ```text
 原始 s:  [0, 1, 2, 3, 4]  len=5  cap=5
-底层:    +---+---+---+---+---+
-         | 0 | 1 | 2 | 3 | 4 |
-         +---+---+---+---+---+
-         ^               ^
-    s.Data            s.Data+4*8
 
-s[:1]:  取前 1 个元素 [0]
-         Data 同 s, Len=1, Cap=5  ← 注意 cap 还是 5，有 4 个空位
-
-s[2:]:  从索引 2 开始取到底 [2,3,4]
-         Data = s.Data + 2*8, Len=3, Cap=3
+s[:1]:   取 [0]           Data=s.Data, Len=1, Cap=5  ← 还有 4 个空位
+s[2:]:   取 [2, 3, 4]     Data=s.Data+16, Len=3
 
 append(s[:1], s[2:]...):
-         s[:1] 还剩 4 个 cap 空位，能装下 3 个元素，不扩容！
-         在底层数组的位置 1、2、3 依次写入 2、3、4
+         s[:1] cap=5，能容纳 1+3=4 个元素 → 不扩容！
+         直接在 s.Data 的位置 1、2、3 写入 2、3、4
 ```
 
-执行后底层数组的变化：
+底层数组的变化：
 
 ```text
 操作前:   +---+---+---+---+---+
@@ -574,413 +486,203 @@ append(s[:1], s[2:]...):
           +---+---+---+---+---+
 
 写入后:   +---+---+---+---+---+
-          | 0 | 2 | 3 | 4 | 4 |   ← 位置 4 的旧值 4 没被覆盖
+          | 0 | 2 | 3 | 4 | 4 |  ← 位置 4 的旧值没被覆盖
           +---+---+---+---+---+
             ^~~~~~~~~~~~^
-            s1 看到的范围  len=4
+            s1 看到的 (len=4)
             ^~~~~~~~~~~~~~~~^
-            s  看到的范围    len=5
+            s  看到的 (len=5)
 ```
 
-这就解释了输出：
+两个后果：
 
-- `s1` = `[0 2 3 4]`，len=4，cap=5
-- `s` = `[0 2 3 4 4]`，len=5——原切片底层数组被 append 就地修改了，尾部多了一个 `4`
-- `s[4]` 访问成功（s 的 len=5），但 `s1[4]` **panic**（s1 的 len=4）
+1. **原切片 s 被污染**。`s` 从 `[0,1,2,3,4]` 变成 `[0,2,3,4,4]`——因为 append 没有扩容，直接在共享底层数组上写入。
+2. **s1[4] panic**。`s1` 的 len=4，访问索引 4 越界——切片边界由 `len` 决定，不随底层数组的物理内容变化。
 
-两个关键问题被暴露出来：
+想避免污染：删除后立即 `s = s[:len(s)-1]` 收缩原切片；或使用 `slices.Delete`（Go 1.21+）。
 
-1. **原切片被"污染"了**。`append` 没有扩容，直接在共享的底层数组上写，`s` 看到的内容跟着变了。
-2. **新切片 len 变小了**。`s1` 是"逻辑上删除了一个元素"的切片，它的 len=4，访问 `s1[4]` 直接越界 panic——即使底层数组那个位置确实有值。
+> `append(s[:i], s[i+1:]...)` 本质是"把后面的元素往前覆盖"。不触发扩容时操作直接在共享底层数组上发生——所有引用同一数组的切片都会看到变化。这不是 bug，但共享的数据修改必须被意识到。
 
-总结一下：
+---
 
-> 用 append 拼接来删除元素，本质是把后面的元素往前拷贝，覆盖掉要删的那个位置。如果原切片 cap 够大，不会触发扩容，操作就在原底层数组上发生——原切片的内容也会被连带修改。删除后新切片的 len 少 1，按 len 访问才是安全的，不要以为底层数组还有值就能越界访问。
+## 独立副本：make + copy
 
-## 5. append 的行为：有容量走原地，没容量走扩容
-
-```golang
-package main
-
-import (
-	"fmt"
-	"reflect"
-	"unsafe"
-)
-
-func PrintSlice(s *[]int) {
-	ss := (*reflect.SliceHeader)(unsafe.Pointer(s))
-
-	fmt.Printf("slice struct: %+v, slice is %v\n", ss, s)
-}
-
-func case1() {
-	s1 := make([]int, 3, 3)
-	s1 = append(s1, 1)
-
-	PrintSlice(&s1)
-}
-
-func case2() {
-	s1 := make([]int, 3, 4)
-	s2 := append(s1, 1)
-
-	PrintSlice(&s1)
-	PrintSlice(&s2)
-}
-
-func case3() {
-	s1 := make([]int, 3, 3)
-	s2 := append(s1, 1)
-
-	PrintSlice(&s1)
-	PrintSlice(&s2)
-}
-
-func main() {
-	case1()
-	case2()
-	case3()
-}
-
-```
-
-```bash
-slice struct: &{Data:824633811472 Len:4 Cap:6}, slice is &[0 0 0 1]
-slice struct: &{Data:824633827584 Len:3 Cap:4}, slice is &[0 0 0]
-slice struct: &{Data:824633827584 Len:4 Cap:4}, slice is &[0 0 0 1]
-slice struct: &{Data:824633819424 Len:3 Cap:3}, slice is &[0 0 0]
-slice struct: &{Data:824633811520 Len:4 Cap:6}, slice is &[0 0 0 1]
-```
-
-三个 case 对比了 append 的两种情况。
-
-| Case  | 原始切片       | append 后      | 是否扩容                    | Data 是否变 |
-| ----- | -------------- | -------------- | --------------------------- | ----------- |
-| case1 | `len=3, cap=3` | `len=4, cap=6` | **是**（3 < 256，扩容到 6） | 变          |
-| case2 | `len=3, cap=4` | `len=4, cap=4` | **否**（4 ≤ 4，原地追加）   | 不变        |
-| case3 | `len=3, cap=3` | `len=4, cap=6` | **是**（3 < 256，扩容到 6） | 变          |
-
-case2 最值得关注：
-
-```text
-s1 := make([]int, 3, 4)   // len=3, cap=4, 还有一个预留空位
-s2 := append(s1, 1)       // 不扩容，直接在预留空位写 1
-
-底层数组:
-         +---+---+---+---+
-         | 0 | 0 | 0 |   |   ← s1 创建后的状态 (cap=4, len=3 只暴露前 3 个)
-         +---+---+---+---+
-           s1 可见 ↑
-         
-         +---+---+---+---+
-         | 0 | 0 | 0 | 1 |   ← append 后 (位置 3 填入了 1)
-         +---+---+---+---+
-           s1 可见 ↑   ↑ s2 可见
-```
-
-`s1` 和 `s2` 的 Data 地址相同（都是 `0x...0800`），因为 **append 没有扩容，直接用了预留空间**。`s1` 的 len 是 3，看不到第 4 个元素；`s2` 的 len 是 4，能看到。
-
-case3 和 case1 本质一样——cap 已满，append 必须扩容，`s2` 拿到新数组，跟 `s1` 彻底分家。
-
-对比三组 Data 地址：
-
-- case2（未扩容）：s1.Data == s2.Data → 共享底层
-- case1 / case3（扩容）：s1.Data 和新的 s1/s2.Data 完全不同 → 独立底层
-
-总结：
-
-> `append` 返回的切片不一定和原切片共享底层数组。能不能共享，取决于原切片的 cap 是否还有余量。这就是为什么官方一直强调 `s = append(s, ...)`——你永远不知道 append 会不会换底层数组，不接收返回值就等于把新数据丢了。
-
-## 6. 深拷贝：copy 才是真正的复制
-
-```golang
-package main
-
-import (
-	"fmt"
-	"reflect"
-	"unsafe"
-)
-
-func PrintSlice(s *[]int) {
-	ss := (*reflect.SliceHeader)(unsafe.Pointer(s))
-
-	fmt.Printf("slice struct: %+v, slice is %v\n", ss, s)
-}
-
-func main() {
-	s1 := []int{1, 2, 3}
-	s2 := make([]int, len(s1))
-
-	copy(s2, s1)
-
-	PrintSlice(&s1)
-	PrintSlice(&s2)
-
-}
-
-```
-
-输出：
-
-```golang
-slice struct: &{Data:824634392576 Len:3 Cap:3}, slice is &[1 2 3]
-slice struct: &{Data:824634392600 Len:3 Cap:3}, slice is &[1 2 3]
-```
+截取共享数据，那怎么得到完全独立的副本？
 
 ```go
 s1 := []int{1, 2, 3}
-s2 := make([]int, len(s1))   // 先分配一个等长的独立切片
-copy(s2, s1)                  // 把 s1 的元素逐个拷贝到 s2 的底层数组
+s2 := make([]int, len(s1))  // 分配独立底层数组
+copy(s2, s1)                 // 逐个拷贝元素
 ```
-
-输出里 `s1.Data` 和 `s2.Data` 是不同的地址——两个切片各自拥有独立的底层数组，互不影响。
 
 ```text
-s1:                          s2:
-+------------------+         +------------------+
-| Data: 0x...9328  |--+      | Data: 0x...9352  |--+
-| Len:  3          |  |      | Len:  3          |  |
-| Cap:  3          |  |      | Cap:  3          |  |
-+------------------+  |      +------------------+  |
-                      v                             v
-              +---+---+---+                 +---+---+---+
-              | 1 | 2 | 3 |                 | 1 | 2 | 3 |
-              +---+---+---+                 +---+---+---+
-              数组 A (独立)                   数组 B (独立)
+s1: &{Data:0x...2576 Len:3 Cap:3}, slice is &[1 2 3]
+s2: &{Data:0x...2600 Len:3 Cap:3}, slice is &[1 2 3]  ← Data 不同
 ```
 
-`copy(dst, src)` 的行为要点：
+```text
+s1 → +---+---+---+                 s2 → +---+---+---+
+     | 1 | 2 | 3 |                      | 1 | 2 | 3 |
+     +---+---+---+                      +---+---+---+
+     数组 A (独立)                       数组 B (独立)
+```
 
-- 拷贝的元素数量 = `min(len(dst), len(src))`
-- 只拷贝元素值，不共享底层数组
-- 如果 dst 比 src 短，src 多出来的元素不会拷过去；如果 dst 比 src 长，多出来的位置保持原值
+`copy(dst, src)` 拷贝 `min(len(dst), len(src))` 个元素，不会自动扩容 dst。runtime 层走 `makeslicecopy`（`runtime/slice.go:39`），同样是 mallocgc + memmove，只为 tolen 分配刚好够用的空间。
 
-对比：截取切片 `s2 := s1[:]` 仍然共享底层数组，改 `s2` 会影响 `s1`，这不是深拷贝。
+对比 `s2 := s1[:]`：Data 相同，改 s2 影响 s1——这是浅拷贝。只有 `make + copy` 产生独立副本。
 
-总结：
+> 只有 `make + copy` 能产生完全独立的切片副本。截取只是创建新视图，所有"浅拷贝操作"都共享同一块底层数组。
 
-> 要想得到一个和原切片**完全独立**的副本，必须先 `make` 分配新切片，再 `copy` 拷贝元素。截取只是创建了一个新视图，底层还是同一块内存。
+---
 
-## 7. 三索引切片：控制 cap 防止误伤
+## 三索引切片：精确控制容量
 
-前面讲截取时说过，`s[low:high]` 的 cap 是 `oldCap - low`。这意味着子切片 append 时可能会一直写到父切片的数据区域：
+截取公式 `cap(child) = cap(parent) - low` 意味着子切片 append 可能污染父切片。三索引切片 `parent[low:high:max]` 限制 cap 来解决这个问题。
 
 ```go
 parent := make([]int, 5, 5)
-child := parent[:3]       // len=3, cap=5 — 还有 2 个空位！
-child = append(child, 1)  // 不扩容，直接在 parent 的底层数组位置 3 写 1
-// parent 变成了 [0,0,0,1,0]，被"误伤"了
+
+child1 := parent[:3]    // len=3, cap=5  → append 可能污染 parent
+child2 := parent[:3:3]  // len=3, cap=3  → append 立即扩容，安全
+child3 := parent[:3:5]  // len=3, cap=5  → 显式允许共享 2 个空位
 ```
 
-Go 提供了**三索引切片** `s[low:high:max]` 来限制子切片的 cap：
+$$
+newLen = high - low
+$$
+$$
+newCap = max - low
+$$
 
-```go
-child := parent[:3:3]     // len=3, cap=3 — cap 被限制住了
-child = append(child, 1)  // 触发扩容，分配到新数组，parent 安全
-```
+约束：$0 \le low \le high \le max \le cap(parent)$。
 
-公式：
+- 子切片只读：两索引足够。
+- 子切片后续可能 append：用三索引限制 cap，强制触发扩容。
+- 并发场景：尤其重要——不加限制的话，两个 goroutine 可能同时写入同一块底层数组。
 
-- `newLen = high - low`
-- `newCap = max - low`
-- 约束：`0 ≤ low ≤ high ≤ max ≤ cap(s)`
+> 三索引切片 `s[low:high:max]` 让调用方明确限制子切片的 cap，防止 append 意外覆盖父切片。
+
+---
+
+## nil 切片与空切片
+
+`var s []int` 和 `make([]int, 0)` 的 len/cap 都是 0，`fmt.Println` 都是 `[]`，但底层不同：
 
 ```text
-parent := make([]int, 5, 5)   // [0, 0, 0, 0, 0]  len=5 cap=5
-
-parent[:3]    → Data=parent.Data, Len=3, Cap=5   ← 危险，append 可能覆盖
-parent[:3:3]  → Data=parent.Data, Len=3, Cap=3   ← 安全，append 立即扩容
-parent[:3:5]  → Data=parent.Data, Len=3, Cap=5   ← 显式允许共享 2 个空位
+nil slice (var s []int):      Data: 0        Len: 0    Cap: 0
+空 slice (make([]int, 0)):    Data: zerobase    Len: 0    Cap: 0
 ```
 
-实际意义：**如果子切片只是读数据，不用三索引也行；但如果子切片后续可能 append，用三索引限制 cap 可以防止意外修改父切片。** 这在并发场景下尤其重要——你以为两个切片互不影响，其实 append 在共享底层上写了。
+`zerobase` 是 runtime 的一个全局零值基地址，所有零长度分配复用同一地址。
 
-### 总结一下
+| 场景 | nil slice | 空 slice |
+|------|-----------|----------|
+| `s == nil` | `true` | `false` |
+| `len(s)` / `cap(s)` | `0` / `0` | `0` / `0` |
+| `append` / `for range` | 正常 | 正常 |
+| `json.Marshal` | `"null"` | `"[]"` |
 
-> 三索引切片 `s[low:high:max]` 可以精确控制子切片的容量，防止 append 时意外污染父切片。`max` 决定了子切片能"看到"多远的底层数组空间。
+唯一需要区分的是 JSON 序列化。API 设计中：`var s []T` 表示"无数据"，`make([]T, 0)` 表示"空列表"——前端期望数组字段始终是 `[]` 时用后者。
 
-## 8. nil slice vs 空 slice：面试必问的区分题
+> nil slice 和空 slice 的 len/cap 都是零，日常操作行为一致。仅有 `== nil` 和 JSON 序列化结果不同。
 
-```go
-var s1 []int           // nil slice
-s2 := make([]int, 0)   // 空 slice，非 nil
-s3 := []int{}          // 空 slice，非 nil
-```
+---
 
-从 header 视角看：
-
-```text
-nil slice (var s []int):
-+------------------+
-| Data: 0 (nil)    |
-| Len:  0          |
-| Cap:  0          |
-+------------------+
-
-空 slice (make([]int, 0)):
-+------------------+
-| Data: 0x...      |  ← 有一个合法的地址（zerobase，Go 运行时的全局零值基地址）
-| Len:  0          |
-| Cap:  0          |
-+------------------+
-```
-
-哪些地方会体现出区别？
-
-| 场景           | nil slice            | 空 slice                  |
-| -------------- | -------------------- | ------------------------- |
-| `s == nil`     | `true`               | `false`                   |
-| `len(s)`       | `0`                  | `0`                       |
-| `cap(s)`       | `0`                  | `0`                       |
-| `for range s`  | 0 次循环             | 0 次循环                  |
-| `append`       | 可以，正常用         | 可以，正常用               |
-| `json.Marshal` | `"null"`             | `"[]"`                    |
-| 等值比较       | 只能跟 nil 比        | 只能跟 nil 比（切片不能互相 `==`） |
-
-关键结论：**大部分操作对 nil slice 和空 slice 行为一致，但序列化结果是不同的。API 设计中通常用 nil slice 表示"无数据"，用空 slice 表示"数据为空列表"。**
-
-### 总结一下
-
-> nil slice 的 Data 字段是 0，空 slice 的 Data 指向合法的内存地址（zerobase）。日常使用 `append` / `len` / `range` 没区别，但 JSON 序列化一个返回 `null` 一个返回 `[]`。
-
-## 9. for range 遍历切片：值拷贝的坑
+## for range 遍历：值拷贝与变量复用
 
 ```go
 s := []int{1, 2, 3}
 for _, v := range s {
-    v = v * 2   // 没用！v 是元素的拷贝，改它不影响 s
+    v = v * 2   // 没用！v 是元素的值拷贝
 }
 fmt.Println(s)  // [1 2 3]
 ```
 
-`for range` 遍历切片时，`v` 是元素的**值拷贝**，修改 `v` 不影响原切片。如果想原地修改，用索引：
+`v` 是每个元素的拷贝。修改原切片用索引：
 
 ```go
 for i := range s {
-    s[i] = s[i] * 2  // 通过索引直接改底层数组
-}
-fmt.Println(s)  // [2 4 6]
-```
-
-还有一个容易忽略的点：**取 `v` 的地址每次都一样**。因为 `v` 在整个循环过程中是同一个变量，只是每次被赋予不同的值：
-
-```go
-for _, v := range s {
-    fmt.Printf("%p\n", &v)  // 三次输出的地址相同！
+    s[i] = s[i] * 2  // 直接写底层数组
 }
 ```
 
-如果你想拿到每个元素真正的地址，应该用 `&s[i]`，不能用 `&v`。
+另一个细节：`&v` 每次迭代地址不变——v 是复用的同一个局部变量。取元素地址用 `&s[i]`。
 
-### 总结一下
+> `for range` 的迭代变量是值拷贝，修改它不影响原切片。`&v` 指向复用的临时变量。要改元素或取地址，用 `s[i]`。
 
-> `for range` 的迭代变量是元素的值拷贝，修改它不影响原切片。取 `&v` 的地址也是同一个地址，不是每个元素的真实地址。要改元素或取地址，用索引 `s[i]`。
+---
 
-## 10. 截取大切片与内存泄漏
+## 大切片截取与内存滞留
 
-前面的内容反复强调过：截取不复制数据，子切片和父切片共享底层数组。这带来一个问题——如果父切片很大，你只截取了一小段，但**整块底层数组都会被 GC 标记为"仍在使用"**：
+从大切片取一小段，底层大数组不会释放：
 
 ```go
-big := make([]byte, 1<<30)   // 1GB
-small := big[100:200]         // 只用了 100 个字节
-// 但 big 的底层 1GB 数组不会被 GC，因为 small 还引着它
+big := make([]byte, 1<<30)  // 1GB
+small := big[100:200]        // 100 字节
+// big 不再被引用，但 1GB 底层数组不会被 GC——small.Data 还指向它
 ```
 
-即使 `big` 本身出了作用域不再使用，只要 `small` 还活着，底层那 1GB 就收不回来。
+这是**内存滞留**（memory retention），不是严格意义上的内存泄漏——数据仍可达，只是实际需要的远小于被保留的。
 
-修复方式——把想要的那一小段**真正拷贝出来**：
+修复：把数据拷出来断开引用。
 
 ```go
 small := make([]byte, 100)
-copy(small, big[100:200])  // 现在 small 有自己的 100 字节底层数组
-// big 如果不再被引用，1GB 可以被 GC 了
+copy(small, big[100:200])
 ```
 
-### 总结一下
+需要警惕的场景：子切片生命周期长（存在结构体字段、全局变量中）、父切片很大、父切片大部分数据不再需要。如果父切片同样长期被引用，截取不增加额外负担。
 
-> 从大切片截取小切片，小切片仍然持有对大底层数组的引用，导致整块内存无法回收。解决方法是 `make` + `copy` 把数据真正拷贝出来，断开对大数组的引用。
-
----
-
-## 易错点
-
-1. **把切片传给函数后，在函数里 append 却指望外部看到**。如果触发了扩容，外部切片完全不受影响。要对外部切片做 append，应该传 `*[]int` 指针，或者把新切片 return 回去。
-
-2. **截取出来的切片仍持有对原底层数组的引用**。比如从一个百万元素的大切片截一小段出来，虽然新切片的 len 很小，但 cap 可能很大（`cap = oldCap - low`），底层大数组不会被 GC。如果只想要那一小段，应该 `make` + `copy`。
-
-3. **用 append 拼接方式删除元素后，原切片的内容也变了**。案例 4 中 `s` 从 `[0,1,2,3,4]` 变成 `[0,2,3,4,4]`——因为 append 在原底层数组上直接覆写了。这不是 bug，但要知道自己在干什么。
-
-4. **把 nil slice 和空 slice 搞混**。`var s []int`（nil slice，Data 为 0，len=cap=0）和 `s := make([]int, 0)`（空 slice，Data 有地址指向 zerobase，len=cap=0）不一样。`json.Marshal` 对 nil slice 输出 `null`，对空 slice 输出 `[]`，这在 API 设计中是两回事。
-
-5. **`copy` 的拷贝数量由较短的那个切片决定**。如果 `copy(dst, src)` 的 dst 比 src 短，src 多余的元素会被丢弃，不会自动扩容 dst。
-
-6. **`for range` 的迭代变量 v 是值拷贝**，修改它不影响原切片。取 `&v` 拿到的永远是同一个临时变量的地址，不是元素的真实地址。要取元素地址用 `&s[i]`。
-
-7. **子切片 append 可能误伤父切片**。截取出的子切片 cap 如果大于 len，append 时会在共享底层数组上直接写入，覆盖父切片的数据。想避免就用三索引切片 `s[low:high:max]` 限制子切片容量。
-
-8. **切片不能直接用 `==` 比较**。两个切片（除了跟 nil 比较）不能直接用 `==` 判断是否相等，因为底层数组可能共享、元素可能含不可比较类型。如果需要比较，用 `reflect.DeepEqual` 或自己写循环。
+> 从大切片截取小切片后，小切片通过 Data 指针让整块底层数组保持可达，导致内存滞留。用 `make + copy` 把数据拷出来即可断开引用。
 
 ---
 
-## 快问快答
+## 边界条件与设计取舍
 
-### Q1：切片是引用类型吗？
+**"切片是引用类型"？**
 
-答：可以说是，也可以说不是——要看你问的是哪个层面。
+Go 官方说切片是值类型。从底层看：header 三个字段确实作为值拷贝传递，但 Data 指针指向共享的底层数组，表现出了引用语义。更准确的表述：**header 是值，Data 指针指向了共享内存**。这个区分直接影响到"函数内 append 扩容后外部是否可见"这类推理。
 
-从行为上看，切片传参时共享底层数组，改元素外部看得见，这很像"引用"。
+**cap 的不确定性**
 
-但从底层实现看，切片的 header 是值拷贝传到函数里的（Data、Len、Cap 三个字段都是值）。所以 Go 官方说切片是值类型，只是 header 里包含了一个指向底层数组的指针。
+append 可能共享也可能独立。换个角度看：程序员通过 make 的 cap 参数主动控制共享边界——`make([]int, len, len)` 让 append 必定扩容，`make([]int, len, len+extra)` 为共享留空间。不是不确定性，是可选的确定性。
 
-面试时可以说：**Go 里没有"引用类型"这个说法。切片 header 是值，但 header 里有指向底层数组的指针，所以共享底层数组。**
+**切片不能 `==` 比较**
 
-### Q2：`s = append(s, ...)` 为什么一定要接收返回值？
+原因：元素类型可能自身不支持 `==`；即使元素可比，语义也不唯一（值相等还是指针相等？）。Go 1.21+ 的 `slices.Equal` 做元素值比较，`reflect.DeepEqual` 可处理不可比较类型但性能差。
 
-答：因为 `append` 之后底层数组可能变了。如果原切片 cap 不够，append 会分配新数组、拷走数据、追加新元素，然后返回的切片指向新数组。不接收返回值的话，你手里的旧切片还是指向旧数组，新数据等于白追加了。
+**并发安全性**
 
-### Q3：`s = append(s, x)` 是不是线程安全的？
+Go 规范不给任何切片操作提供并发安全保证。并发读安全，并发读写或并发写写都是数据竞争。即便是"共享底层但 len 不同"的两个切片也不例外——底层数组的写操作仍和读取构成竞争。
 
-答：不是。Go 里任何操作都不是线程安全的，除非明确文档说明。多个 goroutine 并发 append 同一个切片会导致数据竞争，需要加锁或用 channel 串行化。
+**malloc 规格取整 vs 容量确定性**
 
-### Q4：`nil` 切片和空切片，什么时候需要区分对待？
+roundupsize 让扩容后的 cap 不可精确预测，但换来零碎片的快速分配。`cap >= newLen` 的保证从未打破——不精确不等于不可靠。
 
-答：大部分时候不用，`append`、`len`、`range` 行为都一样。但序列化 JSON 时，nil slice → `null`，空 slice → `[]`。写 REST API 时，如果前端期望数组字段始终是 `[]` 而不是 `null`，初始化时就要用 `make([]T, 0)` 而不是 `var s []T`。
-
-### Q5：对一个 nil 切片取 `len` 或 `cap` 会 panic 吗？
-
-答：不会。`len(nilSlice)` 返回 0，`cap(nilSlice)` 也返回 0。nil slice 底层 header 的三个字段都是零值（Data=0, Len=0, Cap=0），调用 `len`/`cap` 是安全的。只有对 nil 切片做 `s[0]` 这种索引操作才会 panic。
-
-### Q6：截取切片 `s[1:3]` 后，新切片的 cap 是多少？
-
-答：`cap(s) - 1 = cap(s) - low`。截取不会复制数据，新切片的 Data 指针往后挪了 `low` 个元素，能看到的底层数组范围自然少了 `low` 个位置。
-
-### Q7：为什么 `copy` 不会自动扩容 dst？
-
-答：Go 的设计哲学是让程序员明确控制内存分配。`copy` 只拷贝 `min(len(dst), len(src))` 个元素，不会偷偷分配新内存。如果想让 dst 刚好装下 src 的所有元素，先确保 `len(dst) >= len(src)`，或者在 `make` 时把 len 设对。
-
-### Q8：扩容后旧的底层数组会怎样？
-
-答：扩容时 `growslice` 分配了新数组，旧数组如果没有其他切片引用，就会被 GC 回收。但如果还有其他切片也指向旧数组（比如截取出来的子切片），旧数组就会一直活着——这也是截取大切片可能导致内存泄漏的原因。
-
-### Q9：`var s []int`、`s := []int{}`、`s := make([]int, 0)` 哪种写法最好？
-
-答：场景不同选择不同：
-
-- `var s []int`：最推荐，零值初始化，不分配任何内存
-- `s := make([]int, 0)`：需要明确语义——"这是一个已经初始化但为空的列表"，或者在 JSON API 中需要区分 `null` 和 `[]`
-- `s := []int{}`：效果和 `make([]int, 0)` 一样，但不够直接，一般不推荐
-
-大部分场景用 `var s []int` 就够了，后面 `append` 时自然会分配内存。
-
-### Q10：三索引切片 `s[low:high:max]` 什么时候用？
-
-答：当你截取了一个子切片，并且子切片后面会被 append 的时候。限制 cap 可以确保子切片 append 时触发扩容而不是在父切片的底层数组上直接写，防止父子切片的数据互相污染。并发场景尤其重要。
+> 切片的设计处处体现"效率与安全的权衡"：header 值拷贝保留值语义，Data 指针共享提升性能，cap 机制让程序员决定何时共享。理解这些取舍，才能真正掌握切片的行为边界。
 
 ---
 
-## 一句话总结
+## 从现象到模型：三元组作为统一框架
 
-**切片 header 是值拷贝，底层数组是共享的——记住这一点，切片 90% 的行为都能推理出来。**
+回到开头的问题：**有了数组为什么还需要切片？**
 
+不只是因为数组定长。更深层的原因是：切片提供了一层 **view 抽象**。数组是一整块内存，切片是一个打量这块内存的窗口。
+
+窗口由 `{Data, Len, Cap}` 三个参数定义：Data 决定对准哪个位置，Len 决定当前看到几个元素，Cap 决定还能往右扩展到多远。
+
+所有行为都可以从"窗口的创建、复用、扩大、替换"中推演出来：
+
+| 现象 | 窗口操作 | 三元组变化 |
+|------|---------|-----------|
+| 索引修改，外部可见 | 通过窗口写入底层 | Data 不变，共享者可见 |
+| append 不扩容 | 窗口右扩到 Cap 范围内 | Len 增大，Data 不变 |
+| append 触发扩容 | 换一个新窗口 | Data/Len/Cap 全部替换 |
+| 截取子切片 | 同一块内存上建更窄的窗口 | Data 偏移，Len/Cap 缩小 |
+| 删除元素（原地覆盖） | 通过窗口改写底层部分区域 | 共享者的窗口看到改写数据 |
+| 三索引限制 cap | 显式收缩窗口右边界 | Cap 被截断 |
+| `make + copy` | 各建独立窗口 | Data 完全独立 |
+| nil vs 空 slice | Data=0 无窗口，zerobase 是合法窗口 | Data 语义不同 |
+| 大截小，内存滞留 | 小窗口套着大底层 | GC 看的是底层不是窗口 |
+
+> 切片的本质是"带着长度信息的内存片段指针"。header 中的 {array, len, cap} 定义了窗口的位置、大小和扩展空间。理解了窗口如何被创建、复制和替换，也就理解了切片。

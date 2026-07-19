@@ -3,8 +3,8 @@ package main
 import "fmt"
 
 func main() {
-	word := "Hello, Word"
+	word := "你好, Go"
 	for _, v := range word {
-		fmt.Printf("%d\n", v)
+		fmt.Printf("%d:%c\n", v, v)
 	}
 }
