@@ -11,7 +11,7 @@
 ├── go.mod
 ├── docs/
 │   └── 一文带你快速上手Go.md
-├── example/
+├── quick_start/
 │   ├── channels/
 │   ├── context/
 │   ├── defer/
@@ -38,7 +38,7 @@
 
 ### 1. Go 基础语法
 
-这部分放在 `example/` 下，每个目录都是一个独立的小主题：
+这部分放在 `quick_start/` 下，每个目录都是一个独立的小主题：
 
 | 主题 | 目录 | 主要内容 |
 | --- | --- | --- |
@@ -108,19 +108,19 @@ go 1.25.0
 运行某个示例：
 
 ```bash
-go run ./example/channels
-go run ./example/context
-go run ./example/worker_pool
+go run ./quick_start/channels
+go run ./quick_start/context
+go run ./quick_start/worker_pool
 ```
 
 运行 `sync` 子目录里的示例：
 
 ```bash
-go run ./example/sync/sync.Mutex
-go run ./example/sync/sync.RWMutex
-go run ./example/sync/sync.Once
-go run ./example/sync/sync.Map
-go run ./example/sync/aotmic
+go run ./quick_start/sync/sync.Mutex
+go run ./quick_start/sync/sync.RWMutex
+go run ./quick_start/sync/sync.Once
+go run ./quick_start/sync/sync.Map
+go run ./quick_start/sync/aotmic
 ```
 
 注意：`sync/aotmic` 目录名目前是 `aotmic`，内容对应的是 `sync/atomic` 示例。
@@ -129,7 +129,7 @@ go run ./example/sync/aotmic
 
 - [一文带你快速上手 Go](docs/一文带你快速上手Go.md)
 
-这篇文章基于 `example/` 目录整理，适合按“问题 -> 最小代码 -> 关键语法 -> 常见坑”的节奏复习 Go 基础。
+这篇文章基于 `quick_start/` 目录整理，适合按“问题 -> 最小代码 -> 关键语法 -> 常见坑”的节奏复习 Go 基础。
 
 ## theory 规划
 
