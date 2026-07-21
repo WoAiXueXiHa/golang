@@ -2,7 +2,9 @@
 
 这篇文章基于当前目录里的 Go 示例代码整理，目标是复习 Go 基础语法和并发基础，不做百科全书式展开。没有写过的内容不强行扩展
 
-完整代码和原文都在这里：
+完整代码和原文都在这里：https://github.com/WoAiXueXiHa/golang
+
+这是我的个人博客：https://code-learn-build-evolve.vercel.app/
 
 ## 1. Go 程序的基本形态
 
