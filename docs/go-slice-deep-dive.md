@@ -1,11 +1,13 @@
-
 ## 0. 先建立一个总模型
+
 Go Spec 定义为：
+
 > A slice is a descriptor for a contiguous segment of an underlying array and provides access to a numbered sequence of elements from that array.
 
 切片是对底层数组连续段的描述符，提供了对数组元素编号序列的访问
 
 Go Blog 进一步拆解内部结构：
+
 > It consists of a pointer to the array, the length of the segment, and its capacity (the maximum length of the segment)
 
 切片包含了一个指向数组的指针，段的长度和底层数组的容量
@@ -17,13 +19,11 @@ slice 的真实结构就是三元组：
 ```go
 // /usr/lib/go-1.26/src/runtime/slice.go
 type slice struct {
-	array unsafe.Pointer
-	len   int
-	cap   int
+    array unsafe.Pointer
+    len   int
+    cap   int
 }
 ```
-
-把它翻译成人话：
 
 - `array`：指向底层数组中某个元素的地址。
 - `len`：当前这个 slice 能直接访问几个元素。
@@ -88,6 +88,7 @@ fmt.Println(b) // [99 2 3]
 > 表面像是引用，但 slice 的值本身是一个 header，赋值和传参会复制 header；但 header 里的指针仍然指向同一个底层数组，所以元素修改会共享。
 
 ![image-20260728123629843](https://gitee.com/binary-whispers/pic/raw/master///20260728123631422.png)
+
 ## 2. len 和 cap：一个管访问，一个管扩展
 
 看这个例子：
@@ -172,12 +173,12 @@ d := make([]int, 3, 8)
 
 区别如下：
 
-| 写法 | 是否 nil | len | cap | 说明 |
-| --- | --- | ---: | ---: | --- |
-| `var a []int` | 是 | 0 | 0 | 未初始化 slice |
-| `[]int{}` | 否 | 0 | 0 | 已初始化的空 slice |
-| `make([]int, 0)` | 否 | 0 | 0 | 已初始化的空 slice |
-| `make([]int, 3, 8)` | 否 | 3 | 8 | 有 cap 为 8 的底层数组 |
+| 写法                | 是否 nil |  len |  cap | 说明                   |
+| ------------------- | -------- | ---: | ---: | ---------------------- |
+| `var a []int`       | 是       |    0 |    0 | 未初始化 slice         |
+| `[]int{}`           | 否       |    0 |    0 | 已初始化的空 slice     |
+| `make([]int, 0)`    | 否       |    0 |    0 | 已初始化的空 slice     |
+| `make([]int, 3, 8)` | 否       |    3 |    8 | 有 cap 为 8 的底层数组 |
 
 它们大多数情况下都能正常使用：
 
@@ -186,12 +187,13 @@ var s []int
 
 fmt.Println(len(s), cap(s)) // 0 0
 for _, v := range s {
-	fmt.Println(v)
+    fmt.Println(v)
 }
 
 s = append(s, 1)
 fmt.Println(s) // [1]
 ```
+
 ![image-20260728113804433](https://gitee.com/binary-whispers/pic/raw/master///20260728113806171.png)
 
 runtime 里 `make([]T, len, cap)` 走的是 `makeslice`。核心逻辑是检查长度、容量和内存溢出，然后分配内存：
@@ -199,12 +201,12 @@ runtime 里 `make([]T, len, cap)` 走的是 `makeslice`。核心逻辑是检查�
 ```go
 // /usr/lib/go-1.26/src/runtime/slice.go
 func makeslice(et *_type, len, cap int) unsafe.Pointer {
-	mem, overflow := math.MulUintptr(et.Size_, uintptr(cap))
-	if overflow || mem > maxAlloc || len < 0 || len > cap {
-		...
-	}
+    mem, overflow := math.MulUintptr(et.Size_, uintptr(cap))
+    if overflow || mem > maxAlloc || len < 0 || len > cap {
+        ...
+    }
 
-	return mallocgc(mem, et, true)
+    return mallocgc(mem, et, true)
 }
 ```
 
@@ -289,8 +291,6 @@ func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice 
 }
 ```
 
-几个信息要抓住：
-
 - `oldPtr` 是旧底层数组地址。
 - `newLen` 是 append 后的新长度。
 - `oldCap` 是旧容量。
@@ -304,28 +304,28 @@ func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice 
 ```go
 // /usr/lib/go-1.26/src/runtime/slice.go
 func nextslicecap(newLen, oldCap int) int {
-	newcap := oldCap
-	doublecap := newcap + newcap
-	if newLen > doublecap {
-		return newLen
-	}
+    newcap := oldCap
+    doublecap := newcap + newcap
+    if newLen > doublecap {
+        return newLen
+    }
 
-	const threshold = 256
-	if oldCap < threshold {
-		return doublecap
-	}
-	for {
-		newcap += (newcap + 3*threshold) >> 2
-		if uint(newcap) >= uint(newLen) {
-			break
-		}
-	}
+    const threshold = 256
+    if oldCap < threshold {
+        return doublecap
+    }
+    for {
+        newcap += (newcap + 3*threshold) >> 2
+        if uint(newcap) >= uint(newLen) {
+            break
+        }
+    }
 
-	if newcap <= 0 {
-		return newLen
-	}
+    if newcap <= 0 {
+        return newLen
+    }
 
-	return newcap
+    return newcap
 }
 ```
 
@@ -343,7 +343,7 @@ func nextslicecap(newLen, oldCap int) int {
 
 总结一下：
 
-> append 最重要的分岔点就是容量够不够。容量够，原地写，多个 slice 可能互相影响；容量不够，runtime 分配新数组，复制旧元素，返回新的 slice header。所以写业务代码时，append 的返回值一定要接住。
+> append 最重要的分岔点就是容量够不够。容量够，原地写，多个 slice 可能互相影响；容量不够，runtime 分配新数组，复制旧元素，返回新的 slice header。所以写代码时，append 的返回值一定要接住。
 
 ## 5. 函数传 slice：能改元素，改不了调用者 header
 
@@ -351,13 +351,13 @@ func nextslicecap(newLen, oldCap int) int {
 
 ```go
 func changeElem(s []int) {
-	s[0] = 99
+    s[0] = 99
 }
 
 func main() {
-	a := []int{1, 2, 3}
-	changeElem(a)
-	fmt.Println(a) // [99 2 3]
+    a := []int{1, 2, 3}
+    changeElem(a)
+    fmt.Println(a) // [99 2 3]
 }
 ```
 
@@ -367,13 +367,13 @@ func main() {
 
 ```go
 func appendElem(s []int) {
-	s = append(s, 4)
+    s = append(s, 4)
 }
 
 func main() {
-	a := []int{1, 2, 3}
-	appendElem(a)
-	fmt.Println(a) // [1 2 3]
+    a := []int{1, 2, 3}
+    appendElem(a)
+    fmt.Println(a) // [1 2 3]
 }
 ```
 
@@ -383,13 +383,13 @@ func main() {
 
 ```go
 func appendElem(s []int) []int {
-	return append(s, 4)
+    return append(s, 4)
 }
 
 func main() {
-	a := []int{1, 2, 3}
-	a = appendElem(a)
-	fmt.Println(a) // [1 2 3 4]
+    a := []int{1, 2, 3}
+    a = appendElem(a)
+    fmt.Println(a) // [1 2 3 4]
 }
 ```
 
@@ -541,16 +541,16 @@ Go 标准库 `slices.Delete` 也是这个思路：
 ```go
 // /usr/lib/go-1.26/src/slices/slices.go
 func Delete[S ~[]E, E any](s S, i, j int) S {
-	_ = s[i:j:len(s)] // bounds check
+    _ = s[i:j:len(s)] // bounds check
 
-	if i == j {
-		return s
-	}
+    if i == j {
+        return s
+    }
 
-	oldlen := len(s)
-	s = append(s[:i], s[j:]...)
-	clear(s[len(s):oldlen]) // zero/nil out the obsolete elements, for GC
-	return s
+    oldlen := len(s)
+    s = append(s[:i], s[j:]...)
+    clear(s[len(s):oldlen]) // zero/nil out the obsolete elements, for GC
+    return s
 }
 ```
 
@@ -563,6 +563,7 @@ clear(s[len(s):oldlen])
 为什么要 `clear`？因为如果 slice 里放的是指针，删除后尾部位置虽然不在 len 范围里了，但底层数组里还可能残留旧指针。只要底层数组还活着，GC 就可能认为那些对象还被引用着。
 
 总结一下：
+
 > 删除不是把底层数组真的挖掉一块，而是把后面的元素往前搬，再把 len 变短。对于含指针元素，删除后还要把废弃尾部清零，避免旧引用拖住内存。
 
 ### 6.4 新增元素：尾部 append 简单，中间插入要移动
@@ -651,10 +652,10 @@ b := slices.Clone(a)
 ```go
 // /usr/lib/go-1.26/src/slices/slices.go
 func Clone[S ~[]E, E any](s S) S {
-	if s == nil {
-		return nil
-	}
-	return append(S{}, s...)
+    if s == nil {
+        return nil
+    }
+    return append(S{}, s...)
 }
 ```
 
@@ -681,7 +682,7 @@ a := [][]int{{1, 2}, {3, 4}}
 b := make([][]int, len(a))
 
 for i := range a {
-	b[i] = slices.Clone(a[i])
+    b[i] = slices.Clone(a[i])
 }
 
 b[0][0] = 99
@@ -695,7 +696,7 @@ fmt.Println(b[0][0]) // 99
 
 ```go
 func firstTen(big []byte) []byte {
-	return big[:10]
+    return big[:10]
 }
 ```
 
@@ -705,7 +706,7 @@ func firstTen(big []byte) []byte {
 
 ```go
 func firstTen(big []byte) []byte {
-	return slices.Clone(big[:10])
+    return slices.Clone(big[:10])
 }
 ```
 
@@ -742,81 +743,57 @@ append 时：
 3. 后面 append 会不会复用旧数组？
 4. 是否有大数组或指针尾部被无意持有？
 
-### 1. slice 的底层结构是什么？
-
-> slice 是一个三字段描述符，包含指向底层数组的指针、长度和容量。源码里的结构是 `array unsafe.Pointer`、`len int`、`cap int`。slice 本身按值传递，但底层数组可能被多个 slice 共享。
-
-### 2. Go slice 扩容规则是什么？
-
-> 以 Go 1.26 源码为准，`nextslicecap` 中旧容量小于 256 时倾向翻倍；旧容量大于等于 256 后用平滑公式增长，逐步接近 1.25 倍；如果一次 append 需要的长度超过旧容量两倍，则直接取新长度。最终 cap 还会被内存分配器 size class 调整。
-
-### 3. 为什么函数里 append 了，外面看不到？
-
-> 因为 slice 传参复制的是 header。函数里 append 改的是参数副本的 len/cap/ptr，调用者的 header 不会自动更新。要返回新 slice，让调用者重新赋值。
-
-### 4. 为什么 `b := a[:2]; append(b, 99)` 会改到 a？
-
-> 因为 `b` 和 `a` 共享底层数组，并且 `b` 的 cap 可能覆盖到 `a[2]`。append 容量够时会原地写入，所以 `a[2]` 被覆盖。可以用 `a[:2:2]` 限制容量，或用 `slices.Clone` 复制。
-
-### 5. 删除后为什么要 clear？什么时候要深拷贝？
-
-> 删除后，旧底层数组尾部可能还残留指针。即使新 slice 的 len 访问不到它们，GC 仍可能因为底层数组里的引用而保留对象。`slices.Delete` 会对废弃区间 clear，帮助 GC。
-
-> 需要彻底切断底层数组关系时，就要深拷贝。一维 slice 可以用 `slices.Clone`、`append([]T(nil), s...)` 或 `make + copy`；二维 slice 要逐层 Clone。
-
-把下面代码复制到临时文件里运行，先自己写预测结果，再执行验证。
-
 ```go
 package main
 
 import (
-	"fmt"
-	"slices"
+    "fmt"
+    "slices"
 )
 
 func appendInFunc(s []int) {
-	s = append(s, 99)
+    s = append(s, 99)
 }
 
 func appendReturn(s []int) []int {
-	return append(s, 99)
+    return append(s, 99)
 }
 
 func main() {
-	a := []int{1, 2, 3, 4}
-	b := a[:2]
-	c := append(b, 100)
+    a := []int{1, 2, 3, 4}
+    b := a[:2]
+    c := append(b, 100)
 
-	fmt.Println("case1 a:", a)
-	fmt.Println("case1 b:", b)
-	fmt.Println("case1 c:", c)
+    fmt.Println("case1 a:", a)
+    fmt.Println("case1 b:", b)
+    fmt.Println("case1 c:", c)
 
-	x := []int{1, 2, 3}
-	appendInFunc(x)
-	fmt.Println("case2 x:", x)
+    x := []int{1, 2, 3}
+    appendInFunc(x)
+    fmt.Println("case2 x:", x)
 
-	x = appendReturn(x)
-	fmt.Println("case3 x:", x)
+    x = appendReturn(x)
+    fmt.Println("case3 x:", x)
 
-	y := []int{1, 2, 3, 4}
-	z := y[:2:2]
-	z = append(z, 100)
-	fmt.Println("case4 y:", y)
-	fmt.Println("case4 z:", z)
+    y := []int{1, 2, 3, 4}
+    z := y[:2:2]
+    z = append(z, 100)
+    fmt.Println("case4 y:", y)
+    fmt.Println("case4 z:", z)
 
-	p := []*int{}
-	v1, v2, v3 := 1, 2, 3
-	p = append(p, &v1, &v2, &v3)
-	p = slices.Delete(p, 1, 2)
-	fmt.Println("case5 len/cap:", len(p), cap(p))
+    p := []*int{}
+    v1, v2, v3 := 1, 2, 3
+    p = append(p, &v1, &v2, &v3)
+    p = slices.Delete(p, 1, 2)
+    fmt.Println("case5 len/cap:", len(p), cap(p))
 
-	m := [][]int{{1, 2}, {3, 4}}
-	n := make([][]int, len(m))
-	for i := range m {
-		n[i] = slices.Clone(m[i])
-	}
-	n[0][0] = 100
-	fmt.Println("case6 deep copy:", m[0][0], n[0][0])
+    m := [][]int{{1, 2}, {3, 4}}
+    n := make([][]int, len(m))
+    for i := range m {
+        n[i] = slices.Clone(m[i])
+    }
+    n[0][0] = 100
+    fmt.Println("case6 deep copy:", m[0][0], n[0][0])
 }
 ```
 
@@ -830,5 +807,3 @@ func main() {
 - `case6` 为什么二维 slice 要逐层 Clone。
 
 slice 的本质不只是动态数组，而是一个指向底层数组的描述符。它的核心是 `ptr + len + cap`。赋值和传参复制 header，元素修改共享底层数组；append 容量够就原地写，容量不够就分配新数组并复制旧元素；扩容策略由 runtime 决定，Go 1.26 中小容量倾向翻倍，大容量平滑接近 1.25 倍，并受 size class 影响。
-
-
