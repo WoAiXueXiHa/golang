@@ -36,9 +36,13 @@ func transition(s ServerState) ServerState {
 	}
 }
 func main() {
-	ns := transition(StateIdle)
-	fmt.Println(ns)
+	// ns := transition(StateIdle)
+	// fmt.Println(ns)
 
-	ns2 := transition(ns)
-	fmt.Println(ns2)
+	// ns2 := transition(ns)
+	// fmt.Println(ns2)
+
+	num := new(int)
+	aa := new(int)
+	fmt.Println(num == aa)
 }
